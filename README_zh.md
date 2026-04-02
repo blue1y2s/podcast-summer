@@ -8,9 +8,9 @@
 
 ## 简介
 
-Podcast Summer 是一个 Web 应用，用来把播客链接或本地音频处理成 transcript、summary，以及按需生成的 translation。
+Podcast Summer 可以把播客链接或本地音频处理成 transcript、summary，以及按需生成的 translation。
 
-当前主路径只有 Web。Electron 只是遗留壳层，不属于主动维护范围。
+当前主路径是 Web 应用。Electron 仍然保留，但只是遗留壳层，不是主动维护的主要界面。
 
 ## 快速开始
 
@@ -27,45 +27,27 @@ npm start
 
 如果你想用最短路径先跑起来，直接从 `gemini_audio` 开始。
 
-## 什么时候需要 Python
+## 处理流程概览
 
-只有在你要使用下面这些后端时，才需要 Python：
+1. 输入播客链接，或上传本地音频文件。
+2. 服务端解析链接或接收上传的音频。
+3. 所选 ASR backend 生成原始 transcript。
+4. 转录后处理流程负责整理格式、细化说话人轮次、生成 summary，以及按需生成 translation。
+5. 输出文件写入 `results/transcriptions`，本地历史快照保存在 `server/temp`。
 
-- `whisper_local`
-- `whisperx_local`
-- `qwen3_asr`
-- `fun_asr_realtime`
-- `fun_asr_file_diarization`
+完整链路和后端差异见 [docs/backend-pipeline.zh.md](docs/backend-pipeline.zh.md)。
 
-最小准备方式：
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install --upgrade pip
-```
-
-按需安装：
-
-```bash
-pip install faster-whisper
-pip install whisperx pyannote.audio
-pip install dashscope silero-vad qwen3-asr-toolkit
-```
-
-如果要做本地转录或转码，请确认系统里有 `ffmpeg`。
-
-## 后端
+## ASR 后端概览
 
 支持的 ASR backend：
 
-- `auto`
-- `gemini_audio`
-- `qwen3_asr`
-- `fun_asr_realtime`
-- `fun_asr_file_diarization`
-- `whisper_local`
-- `whisperx_local`
+- `auto`：按固定回退顺序自动尝试当前可用后端。
+- `fun_asr_file_diarization`：DashScope 录音文件识别，适合公网直链音频，并提供原生说话人分离。
+- `qwen3_asr`：DashScope Qwen3-ASR，长音频会先做 VAD 分段。
+- `gemini_audio`：Gemini 音频转录，准备成本最低。
+- `fun_asr_realtime`：DashScope Fun-ASR 实时识别，可处理下载后的音频或上传文件。
+- `whisperx_local`：本地 WhisperX + pyannote，提供真实说话人分离。
+- `whisper_local`：本地 faster-whisper，适合作为最简单的本地兜底方案。
 
 当前 `auto` 顺序：
 
@@ -73,10 +55,28 @@ pip install dashscope silero-vad qwen3-asr-toolkit
 fun_asr_file_diarization -> qwen3_asr -> gemini_audio -> fun_asr_realtime -> whisperx_local -> whisper_local
 ```
 
-补充：
+只有下面这些 backend 需要 Python：
 
-- `fun_asr_file_diarization` 只能处理公网直链
-- `whisperx_local` 需要 `PYANNOTE_TOKEN`
+- `whisper_local`
+- `whisperx_local`
+- `qwen3_asr`
+- `fun_asr_realtime`
+- `fun_asr_file_diarization`
+
+更细的限制、依赖和适用场景见 [docs/backend-pipeline.zh.md](docs/backend-pipeline.zh.md)。
+
+## 输出与历史记录
+
+- 导出的文本文件：`results/transcriptions`
+- 最近一次结果快照：`server/temp/latest-result.json`
+- 本地历史快照：`server/temp/history`
+
+当前实现也提供了历史记录接口，用于重新打开和删除已有运行结果。
+
+## 详细文档
+
+- [中文详细说明](docs/backend-pipeline.zh.md)
+- [Backend pipeline details](docs/backend-pipeline.md)
 
 ## 常用命令
 
@@ -89,11 +89,6 @@ npm run ui:preview
 ```
 
 `npm run desktop` 还在，但现在只是遗留包装层。
-
-## 输出
-
-- 导出文件：`results/transcriptions`
-- 本地历史：`server/temp`
 
 ## 致谢
 

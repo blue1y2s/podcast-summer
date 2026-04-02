@@ -2,15 +2,15 @@
 
 Web-first podcast transcription and summarization.
 
-English | [中文](README_zh.md)
+**English | [中文](README_zh.md)**
 
 ![Podcast Transcriber Screenshot](public/screenshot_en.png)
 
 ## Overview
 
-Podcast Summer is a web app for turning podcast links or uploaded audio into transcripts, summaries, and optional translations.
+Podcast Summer turns podcast links or uploaded audio files into a transcript, a summary, and an optional translation.
 
-The main path is the web app. Electron is kept only as a legacy wrapper and is not actively maintained.
+The main path is the web app. Electron still exists as a legacy wrapper, but it is not the actively maintained surface.
 
 ## Quick Start
 
@@ -25,47 +25,29 @@ npm start
 
 Open `http://localhost:3000`.
 
-If you only want the shortest setup, start with `gemini_audio`.
+If you want the shortest path to a working setup, start with `gemini_audio`.
 
-## Python Backends
+## Processing Flow
 
-You only need Python for these backends:
+1. Provide a podcast link or upload a local audio file.
+2. The server resolves or receives the audio source.
+3. The selected ASR backend generates the raw transcript.
+4. The transcript pipeline refines formatting, speaker turns, summary, and optional translation.
+5. Output files are written to `results/transcriptions`, and local history snapshots are stored under `server/temp`.
 
-- `whisper_local`
-- `whisperx_local`
-- `qwen3_asr`
-- `fun_asr_realtime`
-- `fun_asr_file_diarization`
+The full request and backend pipeline is documented in [docs/backend-pipeline.md](docs/backend-pipeline.md).
 
-Minimal setup:
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install --upgrade pip
-```
-
-Install only what you need:
-
-```bash
-pip install faster-whisper
-pip install whisperx pyannote.audio
-pip install dashscope silero-vad qwen3-asr-toolkit
-```
-
-Install `ffmpeg` if you use local transcription or audio conversion.
-
-## Backends
+## ASR Backend Overview
 
 Supported ASR backends:
 
-- `auto`
-- `gemini_audio`
-- `qwen3_asr`
-- `fun_asr_realtime`
-- `fun_asr_file_diarization`
-- `whisper_local`
-- `whisperx_local`
+- `auto`: tries available backends in a fixed fallback order.
+- `fun_asr_file_diarization`: DashScope file transcription with native speaker diarization for public direct audio URLs.
+- `qwen3_asr`: DashScope Qwen3-ASR with VAD-based chunking for long audio.
+- `gemini_audio`: Gemini audio transcription with the lightest setup.
+- `fun_asr_realtime`: DashScope Fun-ASR realtime recognition for uploaded or downloaded audio.
+- `whisperx_local`: local WhisperX + pyannote with real speaker diarization.
+- `whisper_local`: local faster-whisper as the simplest offline-style fallback.
 
 Current `auto` order:
 
@@ -73,10 +55,28 @@ Current `auto` order:
 fun_asr_file_diarization -> qwen3_asr -> gemini_audio -> fun_asr_realtime -> whisperx_local -> whisper_local
 ```
 
-Notes:
+Python is only required for these backends:
 
-- `fun_asr_file_diarization` only works with a public direct audio URL
-- `whisperx_local` needs `PYANNOTE_TOKEN`
+- `whisper_local`
+- `whisperx_local`
+- `qwen3_asr`
+- `fun_asr_realtime`
+- `fun_asr_file_diarization`
+
+For backend-by-backend constraints and tradeoffs, see [docs/backend-pipeline.md](docs/backend-pipeline.md).
+
+## Output And History
+
+- Exported text artifacts: `results/transcriptions`
+- Latest result snapshot: `server/temp/latest-result.json`
+- Local history snapshots: `server/temp/history`
+
+The current implementation also exposes history APIs for reopening and deleting saved runs.
+
+## Detailed Docs
+
+- [Backend pipeline details](docs/backend-pipeline.md)
+- [中文详细说明](docs/backend-pipeline.zh.md)
 
 ## Commands
 
@@ -89,11 +89,6 @@ npm run ui:preview
 ```
 
 `npm run desktop` still exists, but it is legacy packaging.
-
-## Output
-
-- exported files: `results/transcriptions`
-- local history: `server/temp`
 
 ## Attribution
 
