@@ -10,9 +10,15 @@ yarn-error.log*
 .env.development.local
 .env.test.local
 .env.production.local
+venv/
+.venv/
+models/
 
 # 临时文件
 server/temp/
+results/
+server/__pycache__/
+*.pyc
 *.tmp
 *.temp
 
@@ -33,3 +39,7 @@ Thumbs.db
 # 生产构建文件
 dist/
 build/
+
+# 本地测试素材
+test.aiff
+test.mp3

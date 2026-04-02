@@ -25,7 +25,7 @@ class LocalWhisperTranscriber:
         self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
         print(f"✅ 模型加载完成", file=sys.stderr)
 
-    def transcribe_file(self, audio_path, language=None):
+    def transcribe_file(self, audio_path, language=None, prompt=None):
         """
         转录单个音频文件
         
@@ -41,11 +41,17 @@ class LocalWhisperTranscriber:
             start_time = time.time()
             
             # 执行转录
+            transcribe_kwargs = {
+                "language": language,
+                "vad_filter": True,
+                "vad_parameters": dict(min_silence_duration_ms=500)
+            }
+            if prompt:
+                transcribe_kwargs["initial_prompt"] = prompt
+
             segments, info = self.model.transcribe(
-                audio_path, 
-                language=language,
-                vad_filter=True,  # 启用语音活动检测
-                vad_parameters=dict(min_silence_duration_ms=500)
+                audio_path,
+                **transcribe_kwargs
             )
             
             # 收集所有片段
@@ -87,7 +93,7 @@ class LocalWhisperTranscriber:
             print(f"❌ 转录失败: {e}", file=sys.stderr)
             return error_result
 
-    def transcribe_multiple(self, audio_paths, language=None):
+    def transcribe_multiple(self, audio_paths, language=None, prompt=None):
         """
         批量转录多个音频文件
         
@@ -105,7 +111,7 @@ class LocalWhisperTranscriber:
         
         for i, audio_path in enumerate(audio_paths, 1):
             print(f"🎵 处理文件 {i}/{total_files}: {Path(audio_path).name}", file=sys.stderr)
-            result = self.transcribe_file(audio_path, language)
+            result = self.transcribe_file(audio_path, language, prompt)
             results.append(result)
         
         return results
@@ -205,11 +211,13 @@ def save_transcript_to_file(transcript_text, save_dir, file_prefix=None, origina
 def main():
     parser = argparse.ArgumentParser(description="本地Faster-Whisper音频转录")
     parser.add_argument("files", nargs="+", help="音频文件路径")
-    parser.add_argument("--model", default="base", 
-                       choices=["tiny", "base", "small", "medium", "large-v3"],
-                       help="Whisper模型大小 (默认: base)")
+    parser.add_argument(
+        "--model",
+        default="medium",
+        help="Whisper模型名称或本地模型目录路径 (默认: medium)"
+    )
     parser.add_argument("--language", help="指定语言代码 (如: zh, en)")
-    parser.add_argument("--device", default="cpu", 
+    parser.add_argument("--device", default="cpu",
                        choices=["cpu", "cuda"], help="计算设备")
     parser.add_argument("--compute-type", default="int8",
                        choices=["int8", "int16", "float16", "float32"],
@@ -219,6 +227,7 @@ def main():
     parser.add_argument("--file-prefix", help="保存文件的前缀名称")
     parser.add_argument("--source-url", help="播客来源链接")
     parser.add_argument("--podcast-title", help="播客标题")
+    parser.add_argument("--prompt", help="转录提示词/上下文")
     
     args = parser.parse_args()
     
@@ -241,9 +250,9 @@ def main():
         
         # 执行转录
         if len(audio_files) == 1:
-            result = transcriber.transcribe_file(audio_files[0], args.language)
+            result = transcriber.transcribe_file(audio_files[0], args.language, args.prompt)
         else:
-            result = transcriber.transcribe_multiple(audio_files, args.language)
+            result = transcriber.transcribe_multiple(audio_files, args.language, args.prompt)
         
         # 处理转录文本保存
         saved_files = []

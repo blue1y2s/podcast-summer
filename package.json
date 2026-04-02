@@ -2,11 +2,15 @@
   "name": "podcast-extractor",
   "version": "1.0.0",
   "description": "双语播客提取器 - Bilingual Podcast Transcriber & Summarizer",
-  "main": "server/index.js",
+  "main": "electron/main.js",
   "scripts": {
     "start": "node server/index.js",
     "dev": "nodemon server/index.js",
-    "client": "live-server public"
+    "client": "vite",
+    "ui:dev": "vite",
+    "ui:build": "vite build",
+    "ui:preview": "vite preview",
+    "desktop": "npm run ui:build && electron electron/main.js"
   },
   "keywords": [
     "podcast",
@@ -18,15 +22,26 @@
   "author": "",
   "license": "Apache-2.0",
   "dependencies": {
+    "@google/genai": "^1.47.0",
     "axios": "^1.6.0",
+    "daisyui": "^4.12.14",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
+    "marked": "^15.0.7",
     "multer": "^1.4.5-lts.1",
     "openai": "^4.24.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "xml2js": "^0.6.2"
   },
   "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.20",
+    "electron": "^37.2.3",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.13",
+    "vite": "^5.4.8",
     "nodemon": "^3.0.2"
   }
 }

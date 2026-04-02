@@ -1,36 +1,13 @@
 const OpenAI = require('openai');
+const { GoogleGenAI, createUserContent, createPartFromUri } = require('@google/genai');
 const fs = require('fs');
 const path = require('path');
-const { exec } = require('child_process');
+const { exec, execFile } = require('child_process');
 const { promisify } = require('util');
+const { createOutputContext, writeManagedTextFile } = require('../utils/fileSaver');
 
 const execAsync = promisify(exec);
-
-/**
- * 生成标准化的文件名
- * @param {string} type - 文件类型 (raw, transcript, summary, translation)
- * @param {string} title - 播客标题
- * @returns {string} - 标准化的文件前缀
- */
-function generateFilePrefix(type, title) {
-    // 清理标题，保留重要标点符号，将特殊符号转换为文件名安全字符
-    let cleanTitle = title
-        .replace(/\s*\|\s*/g, '-')  // | 转换为 -
-        .replace(/\s*:\s*/g, '-')  // : 转换为 -
-        .replace(/[<>:"/\\|?*]/g, '')  // 移除文件名非法字符
-        .replace(/\s+/g, '_')  // 空格转换为下划线
-        .replace(/[^\w\u4e00-\u9fa5\-_.]/g, '');  // 只保留字母数字中文和安全符号zhe
-    
-    // 如果太长则保留前30个字符以保证文件名简洁
-    if (cleanTitle.length > 30) {
-        cleanTitle = cleanTitle.substring(0, 30);
-    }
-    
-    // 生成6位UUID
-    const uuid = Math.random().toString(36).substr(2, 6).toUpperCase();
-    
-    return `${type}_${cleanTitle}_${uuid}`;
-}
+const execFileAsync = promisify(execFile);
 
 /**
  * 将翻译内容格式化为Markdown
@@ -38,10 +15,10 @@ function generateFilePrefix(type, title) {
 function formatTranslationAsMarkdown(translatedText, podcastTitle, targetLanguage = 'zh', sourceUrl = null) {
     // 使用播客实际标题，而不是文件名
     const finalTitle = podcastTitle ? `# 🌍 ${podcastTitle}` : `# 🌍 Podcast Translation`;
-    
+
     // 添加source链接（如果提供）
     const sourceSection = sourceUrl ? `\n\n---\n\n**Source:** ${sourceUrl}` : '';
-    
+
     return `${finalTitle}
 
 ${translatedText}${sourceSection}
@@ -54,27 +31,1369 @@ ${translatedText}${sourceSection}
 function formatSummaryAsMarkdown(summary, podcastTitle, outputLanguage = 'zh', sourceUrl = null) {
     // 使用播客实际标题，而不是文件名
     const finalTitle = podcastTitle ? `# 🎙️ ${podcastTitle}` : `# 🎙️ Podcast Summary`;
-    
+
     // 添加source链接（如果提供）
     const sourceSection = sourceUrl ? `\n\n---\n\n**Source:** ${sourceUrl}` : '';
-    
+
     return `${finalTitle}
 
 ${summary}${sourceSection}
 `;
 }
 
-// 本地Whisper转录配置
-const WHISPER_MODEL = process.env.WHISPER_MODEL || 'base'; // Whisper模型大小
-console.log(`🎤 转录模式: 本地Faster-Whisper`);
+/**
+ * 将转录内容格式化为Markdown
+ */
+function formatTranscriptAsMarkdown(transcriptText, podcastTitle = null, sourceUrl = null) {
+    const finalTitle = podcastTitle ? `# 📝 ${podcastTitle}` : '# 📝 Podcast Transcript';
+    const sourceSection = sourceUrl ? `\n\n---\n\n**Source:** ${sourceUrl}` : '';
 
-// 初始化OpenAI客户端（用于总结和文本优化）
-const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-    baseURL: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
-    timeout: 900000,
-    maxRetries: 0
-});
+    return `${finalTitle}
+
+${transcriptText}${sourceSection}
+`;
+}
+
+
+/**
+ * 根据扩展名推断音频MIME类型
+ */
+function getAudioMimeType(audioPath) {
+    const ext = path.extname(audioPath).toLowerCase();
+    const mimeMap = {
+        '.mp3': 'audio/mpeg',
+        '.m4a': 'audio/mp4',
+        '.mp4': 'audio/mp4',
+        '.wav': 'audio/wav',
+        '.aac': 'audio/aac',
+        '.ogg': 'audio/ogg',
+        '.oga': 'audio/ogg',
+        '.flac': 'audio/flac',
+        '.webm': 'audio/webm'
+    };
+
+    return mimeMap[ext] || 'application/octet-stream';
+}
+
+/**
+ * 获取音频真实时长（秒）
+ */
+async function probeAudioDuration(audioPath) {
+    try {
+        const command = `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${audioPath}"`;
+        const { stdout } = await execAsync(command);
+        const duration = Number.parseFloat((stdout || '').trim());
+
+        return Number.isFinite(duration) ? duration : null;
+    } catch (error) {
+        console.warn(`⚠️ ffprobe 获取时长失败: ${error.message}`);
+        return null;
+    }
+}
+
+function normalizeOptionalText(value, maxLength = 500) {
+    if (!value || typeof value !== 'string') {
+        return '';
+    }
+
+    return value.trim().replace(/\s+/g, ' ').slice(0, maxLength);
+}
+
+function normalizeHotwords(value) {
+    if (!value) {
+        return [];
+    }
+
+    if (Array.isArray(value)) {
+        return value
+            .map((item) => normalizeOptionalText(String(item), 80))
+            .filter(Boolean)
+            .slice(0, 20);
+    }
+
+    return String(value)
+        .split(/[,\n，]/)
+        .map((item) => normalizeOptionalText(item, 80))
+        .filter(Boolean)
+        .slice(0, 20);
+}
+
+const SPEAKER_LINE_PREFIX_RE = /^((?:speaker|host|guest)\s*\d*|主持人(?:\s*\d+)?|嘉宾(?:\s*\d+)?|说话人\s*\d+|[A-Za-z][A-Za-z0-9·_-]{0,23}|[\u4e00-\u9fa5·]{2,4})(?:\s*[:：]\s*|\s+-\s+)/i;
+const SHORT_TRANSCRIPT_OPTIMIZATION_THRESHOLD = 80;
+const OPTIMIZATION_DRIFT_REPLY_RE = /(please provide .*transcript|ready to assist|according to your requirements|请提供您需要优化|请提供.*转录文本|一旦您发送内容|按照您的要求进行|ready to help|provide the audio transcript)/i;
+
+function stripTranscriptPresentationArtifacts(transcript) {
+    return String(transcript || '')
+        .replace(/^#.*$/gm, '')
+        .replace(/^\*\*Source:\*\*.*$/gm, '')
+        .replace(/^---$/gm, '')
+        .trim();
+}
+
+function shouldSkipLlmTranscriptOptimization(rawTranscript) {
+    return stripTranscriptPresentationArtifacts(rawTranscript).length < SHORT_TRANSCRIPT_OPTIMIZATION_THRESHOLD;
+}
+
+function isSuspiciousOptimizationResult(rawTranscript, optimizedTranscript) {
+    const rawText = stripTranscriptPresentationArtifacts(rawTranscript);
+    const optimizedText = stripTranscriptPresentationArtifacts(optimizedTranscript);
+
+    if (!optimizedText) {
+        return true;
+    }
+
+    if (OPTIMIZATION_DRIFT_REPLY_RE.test(optimizedText) && !OPTIMIZATION_DRIFT_REPLY_RE.test(rawText)) {
+        return true;
+    }
+
+    if (rawText.length < 500 && optimizedText.length > rawText.length * 2 + 40) {
+        return true;
+    }
+
+    return false;
+}
+
+function stripSpeakerPrefix(text) {
+    return String(text || '').replace(SPEAKER_LINE_PREFIX_RE, '').trim();
+}
+
+function normalizeTranscriptForSpeakerValidation(transcript) {
+    return stripTranscriptPresentationArtifacts(transcript)
+        .split(/\n+/)
+        .map((line) => stripSpeakerPrefix(line))
+        .join(' ')
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function tokenizeTranscriptForSpeakerValidation(transcript) {
+    return normalizeTranscriptForSpeakerValidation(transcript).match(/[a-z0-9]+|[\u4e00-\u9fff]/gi) || [];
+}
+
+function calculateTokenOverlapRatio(originalTokens, candidateTokens) {
+    if (originalTokens.length === 0 || candidateTokens.length === 0) {
+        return 0;
+    }
+
+    const candidateCounts = new Map();
+    candidateTokens.forEach((token) => {
+        candidateCounts.set(token, (candidateCounts.get(token) || 0) + 1);
+    });
+
+    let overlap = 0;
+    originalTokens.forEach((token) => {
+        const remaining = candidateCounts.get(token) || 0;
+        if (remaining > 0) {
+            overlap += 1;
+            candidateCounts.set(token, remaining - 1);
+        }
+    });
+
+    return overlap / originalTokens.length;
+}
+
+function isSpeakerRefinementSafe(originalTranscript, refinedTranscript) {
+    const normalizedOriginal = normalizeTranscriptForSpeakerValidation(originalTranscript);
+    const normalizedRefined = normalizeTranscriptForSpeakerValidation(refinedTranscript);
+
+    if (!normalizedOriginal || !normalizedRefined) {
+        return false;
+    }
+
+    const lengthRatio = normalizedRefined.length / normalizedOriginal.length;
+    if (lengthRatio < 0.78 || lengthRatio > 1.22) {
+        return false;
+    }
+
+    const tokenOverlapRatio = calculateTokenOverlapRatio(
+        tokenizeTranscriptForSpeakerValidation(originalTranscript),
+        tokenizeTranscriptForSpeakerValidation(refinedTranscript)
+    );
+
+    return tokenOverlapRatio >= 0.82;
+}
+
+function buildTranscriptionPrompt(language, options = {}) {
+    const hotwords = normalizeHotwords(options.hotwords);
+    const transcriptionContext = normalizeOptionalText(options.transcriptionContext, 500);
+    const promptParts = [];
+
+    if (language && language !== 'auto') {
+        promptParts.push(`Transcribe this audio verbatim in ${language}.`);
+    } else {
+        promptParts.push('Transcribe this audio verbatim.');
+    }
+
+    promptParts.push('Keep the original language.');
+    promptParts.push('Do not summarize.');
+    promptParts.push('Do not invent timestamps.');
+    promptParts.push('When speaker turns are clear, put each turn on its own paragraph and preserve consistent generic speaker labels.');
+    promptParts.push('Use labels like "主持人:" / "嘉宾:" or "Speaker 1:" / "Speaker 2:" when you are confident.');
+    promptParts.push('Do not hallucinate speaker names. If names are not explicit in the audio, keep labels generic.');
+
+    if (hotwords.length > 0) {
+        promptParts.push(`Prefer these spellings when they are actually heard: ${hotwords.join(', ')}.`);
+    }
+
+    if (transcriptionContext) {
+        promptParts.push(`Use this context only to disambiguate terms that are actually spoken: ${transcriptionContext}.`);
+    }
+
+    return promptParts.join(' ');
+}
+
+function formatTimecode(seconds) {
+    if (!Number.isFinite(seconds) || seconds < 0) {
+        return null;
+    }
+
+    const totalSeconds = Math.round(seconds);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const remainingSeconds = totalSeconds % 60;
+
+    if (hours > 0) {
+        return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`;
+    }
+
+    return `${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`;
+}
+
+function normalizeSpeakerLabel(label) {
+    return String(label || '')
+        .trim()
+        .replace(/\s+/g, ' ')
+        .replace(/^speaker\s*([0-9]+)$/i, 'Speaker $1')
+        .replace(/^host\s*([0-9]+)$/i, 'Host $1')
+        .replace(/^guest\s*([0-9]+)$/i, 'Guest $1')
+        .replace(/^说话人\s*([0-9]+)$/i, '说话人 $1');
+}
+
+function getSpeakerRegistryKey(label) {
+    const normalized = normalizeSpeakerLabel(label);
+    if (!normalized) {
+        return null;
+    }
+
+    const genericMatch = normalized.match(/^(speaker|host|guest|说话人|主持人|嘉宾)\s*([0-9]+)?$/i);
+    if (genericMatch) {
+        return `${genericMatch[1].toLowerCase()}:${genericMatch[2] || ''}`;
+    }
+
+    return normalized;
+}
+
+function isHostKeyword(label) {
+    return /^(主持人|主播|host)$/i.test(String(label || '').trim());
+}
+
+function isGuestKeyword(label) {
+    return /^(嘉宾|guest)$/i.test(String(label || '').trim());
+}
+
+function extractIntroducedSpeakerName(text) {
+    const trimmed = String(text || '').trim();
+    if (!trimmed) {
+        return null;
+    }
+
+    const match =
+        trimmed.match(/^(?:(?:hello|hi)\s*)?(?:大家好|你好|嗨)?[，,\s]*我是([A-Za-z\u4e00-\u9fa5·]{1,32})/i) ||
+        trimmed.match(/^我是([A-Za-z\u4e00-\u9fa5·]{1,32})/i);
+
+    return match ? match[1].trim() : null;
+}
+
+function buildSpeakerAliasMap(parsedBlocks) {
+    const aliasMap = new Map();
+    const orderedKeys = [];
+    const hostKeys = [];
+    const guestKeys = [];
+    const genericKeys = [];
+
+    function pushUnique(collection, value) {
+        if (value && !collection.includes(value)) {
+            collection.push(value);
+        }
+    }
+
+    for (const block of parsedBlocks) {
+        if (!block.speaker) {
+            continue;
+        }
+
+        const registryKey = getSpeakerRegistryKey(block.speaker);
+        if (!registryKey) {
+            continue;
+        }
+
+        pushUnique(orderedKeys, registryKey);
+
+        const introducedName = extractIntroducedSpeakerName(block.text);
+        if (!introducedName) {
+            continue;
+        }
+
+        if (isHostKeyword(introducedName)) {
+            pushUnique(hostKeys, registryKey);
+            continue;
+        }
+
+        if (isGuestKeyword(introducedName)) {
+            pushUnique(guestKeys, registryKey);
+            continue;
+        }
+
+        if (!aliasMap.has(registryKey)) {
+            aliasMap.set(registryKey, introducedName);
+        }
+    }
+
+    for (const registryKey of orderedKeys) {
+        if (aliasMap.has(registryKey)) {
+            continue;
+        }
+
+        if (/^(host:|主持人:)/i.test(registryKey)) {
+            pushUnique(hostKeys, registryKey);
+            continue;
+        }
+
+        if (/^(guest:|嘉宾:)/i.test(registryKey)) {
+            pushUnique(guestKeys, registryKey);
+            continue;
+        }
+
+        pushUnique(genericKeys, registryKey);
+    }
+
+    hostKeys.forEach((registryKey, index) => {
+        aliasMap.set(registryKey, hostKeys.length === 1 ? '主持人' : `主持人 ${index + 1}`);
+    });
+
+    guestKeys.forEach((registryKey, index) => {
+        aliasMap.set(registryKey, guestKeys.length === 1 ? '嘉宾' : `嘉宾 ${index + 1}`);
+    });
+
+    const namedSpeakerCount = [...aliasMap.keys()].filter((registryKey) =>
+        !hostKeys.includes(registryKey) && !guestKeys.includes(registryKey)
+    ).length;
+
+    if (genericKeys.length > 0 && namedSpeakerCount >= 1) {
+        genericKeys.forEach((registryKey, index) => {
+            aliasMap.set(registryKey, genericKeys.length === 1 ? '主持人' : `主持人 ${index + 1}`);
+        });
+        return aliasMap;
+    }
+
+    genericKeys.forEach((registryKey, index) => {
+        if (!aliasMap.has(registryKey)) {
+            aliasMap.set(registryKey, `说话人 ${index + 1}`);
+        }
+    });
+
+    return aliasMap;
+}
+
+function extractSpeakerFromBlock(block) {
+    const speakerMatch = block.match(SPEAKER_LINE_PREFIX_RE);
+    if (!speakerMatch) {
+        return { speaker: null, text: block.trim() };
+    }
+
+    const speaker = normalizeSpeakerLabel(speakerMatch[1]);
+    const text = block.slice(speakerMatch[0].length).trim();
+    return {
+        speaker,
+        text: text || block.trim()
+    };
+}
+
+function prepareTranscriptBlocks(transcript) {
+    const cleanedTranscript = stripTranscriptPresentationArtifacts(transcript);
+
+    if (!cleanedTranscript) {
+        return {
+            cleanedTranscript: '',
+            normalizedBlocks: []
+        };
+    }
+
+    const blocks = splitTranscriptIntoTurnBlocks(cleanedTranscript);
+    const baseBlocks = (blocks.length > 0 ? blocks : [cleanedTranscript]).map((rawBlock) => {
+        const extracted = extractSpeakerFromBlock(rawBlock);
+        return {
+            rawBlock: rawBlock.trim(),
+            speaker: extracted.speaker,
+            text: extracted.text
+        };
+    });
+    const aliasMap = buildSpeakerAliasMap(baseBlocks);
+
+    return {
+        cleanedTranscript,
+        normalizedBlocks: baseBlocks.map((block) => {
+            const registryKey = getSpeakerRegistryKey(block.speaker);
+            const speaker = registryKey ? aliasMap.get(registryKey) || block.speaker : null;
+            return {
+                ...block,
+                speaker,
+                normalizedBlock: speaker ? `${speaker}：${block.text}` : block.text
+            };
+        })
+    };
+}
+
+function detectConversationActors(blocks) {
+    const discoveredNames = [];
+
+    for (const block of blocks) {
+        const introMatch =
+            block.match(/^(?:嗨|你好|大家好|hello|hi)[，,\s]*我是([A-Za-z\u4e00-\u9fa5·]{1,24})/i) ||
+            block.match(/^我是([A-Za-z\u4e00-\u9fa5·]{1,24})/i);
+
+        if (!introMatch) {
+            continue;
+        }
+
+        const candidate = introMatch[1].trim();
+        if (!candidate || discoveredNames.includes(candidate)) {
+            continue;
+        }
+
+        discoveredNames.push(candidate);
+        if (discoveredNames.length >= 2) {
+            break;
+        }
+    }
+
+    return {
+        hostSpeaker: discoveredNames[0] || '主持人',
+        guestSpeaker: discoveredNames[1] || '嘉宾'
+    };
+}
+
+function splitTranscriptIntoTurnBlocks(cleanedTranscript) {
+    return cleanedTranscript
+        .split(/\n{2,}/)
+        .flatMap((paragraph) =>
+            paragraph
+                .split(/\n+/)
+                .map((line) => line.trim())
+                .filter(Boolean)
+        );
+}
+
+function looksLikeQuestion(text) {
+    const trimmed = String(text || '').trim();
+    if (!trimmed) {
+        return false;
+    }
+
+    if (/[？?]\s*$/.test(trimmed)) {
+        return true;
+    }
+
+    return /^(请问|所以|那么|那|最后一个问题|最后|有没有|为什么|可不可以|你觉得|是不是|能不能|那我们来)/.test(trimmed);
+}
+
+function inferSpeakerForTurn(text, context) {
+    const trimmed = String(text || '').trim();
+    if (!trimmed) {
+        return null;
+    }
+
+    const introMatch =
+        trimmed.match(/^(?:嗨|你好|大家好|hello|hi)[，,\s]*我是([A-Za-z\u4e00-\u9fa5·]{1,24})/i) ||
+        trimmed.match(/^我是([A-Za-z\u4e00-\u9fa5·]{1,24})/i);
+
+    if (introMatch) {
+        const speakerName = introMatch[1].trim();
+        if (speakerName === context.hostSpeaker || speakerName === context.guestSpeaker) {
+            return speakerName;
+        }
+
+        return context.seenSpeakerNames.size === 0 ? context.hostSpeaker : context.guestSpeaker;
+    }
+
+    if (context.index === 0 && /欢迎收听|我们关注|今天请到了/.test(trimmed)) {
+        return context.hostSpeaker;
+    }
+
+    if (/你好|欢迎来到|请问/.test(trimmed) && trimmed.includes(context.guestSpeaker)) {
+        return context.hostSpeaker;
+    }
+
+    const isQuestion = looksLikeQuestion(trimmed);
+    if (isQuestion) {
+        return context.hostSpeaker;
+    }
+
+    if (context.previousWasQuestion && context.previousSpeaker) {
+        return context.previousSpeaker === context.hostSpeaker ? context.guestSpeaker : context.hostSpeaker;
+    }
+
+    if (/^(好，那|那我们|我们前面|那比如|我在想|其实有很长一段时间|最后一个问题|大家今天可以)/.test(trimmed)) {
+        return context.hostSpeaker;
+    }
+
+    if (/^(对|会|有|没有|当然|就是|我们|我|一方面|但我|首先|其次|最后|这个|平头哥)/.test(trimmed) && context.previousSpeaker) {
+        return context.previousSpeaker === context.hostSpeaker ? context.guestSpeaker : context.previousSpeaker;
+    }
+
+    return context.previousSpeaker || null;
+}
+
+function buildStructuredTranscript(transcript, audioDuration = null) {
+    const { cleanedTranscript, normalizedBlocks } = prepareTranscriptBlocks(transcript);
+
+    if (!cleanedTranscript) {
+        return {
+            segments: [],
+            timingMode: 'none',
+            speakerMode: 'none'
+        };
+    }
+
+    const contextBlocks = normalizedBlocks.map((block) => block.text);
+    const { hostSpeaker, guestSpeaker } = detectConversationActors(contextBlocks);
+    const seenSpeakerNames = new Set();
+    let previousSpeaker = null;
+    let previousWasQuestion = false;
+    const hasExplicitSpeakers = normalizedBlocks.some((block) => Boolean(block.speaker));
+
+    const parsedBlocks = normalizedBlocks.map((block, index) => {
+        const inferredSpeaker = block.speaker || (!hasExplicitSpeakers ? inferSpeakerForTurn(block.text, {
+            index,
+            hostSpeaker,
+            guestSpeaker,
+            previousSpeaker,
+            previousWasQuestion,
+            seenSpeakerNames
+        }) : null);
+
+        if (inferredSpeaker) {
+            seenSpeakerNames.add(inferredSpeaker);
+        }
+
+        previousSpeaker = inferredSpeaker || previousSpeaker;
+        previousWasQuestion = looksLikeQuestion(block.text);
+
+        return {
+            ...block,
+            speaker: inferredSpeaker
+        };
+    });
+
+    const totalWeight = parsedBlocks.reduce((sum, block) => sum + Math.max(block.text.length, 1), 0);
+    const hasEstimatedTimings = Number.isFinite(audioDuration) && audioDuration > 0;
+    const hasSpeakers = parsedBlocks.some((block) => Boolean(block.speaker));
+    let cursor = 0;
+
+    const segments = parsedBlocks.map((block, index) => {
+        const weight = Math.max(block.text.length, 1);
+        const startSec = hasEstimatedTimings ? cursor : null;
+        const durationShare = hasEstimatedTimings ? (audioDuration * weight) / totalWeight : null;
+        const endSec = hasEstimatedTimings ? Math.min(audioDuration, cursor + durationShare) : null;
+        if (hasEstimatedTimings) {
+            cursor = endSec;
+        }
+
+        return {
+            id: `segment_${index + 1}`,
+            index,
+            speaker: block.speaker,
+            text: block.text,
+            startSec: startSec !== null ? Number(startSec.toFixed(1)) : null,
+            endSec: endSec !== null ? Number(endSec.toFixed(1)) : null,
+            timeLabel: startSec !== null ? formatTimecode(startSec) : null
+        };
+    });
+
+    return {
+        segments,
+        timingMode: hasEstimatedTimings ? 'estimated' : 'none',
+        speakerMode: hasSpeakers ? 'explicit-or-inferred' : 'none'
+    };
+}
+
+function getDisplaySpeakerLabel(rawSpeaker, speakerRegistry) {
+    const normalized = String(rawSpeaker || '').trim();
+    if (!normalized) {
+        return null;
+    }
+
+    if (/^(speaker|host|guest|说话人|主持人|嘉宾)\b/i.test(normalized)) {
+        return normalizeSpeakerLabel(normalized);
+    }
+
+    if (!speakerRegistry.has(normalized)) {
+        speakerRegistry.set(normalized, `Speaker ${speakerRegistry.size + 1}`);
+    }
+
+    return speakerRegistry.get(normalized);
+}
+
+function buildStructuredTranscriptFromSegments(rawSegments = [], options = {}) {
+    const speakerRegistry = new Map();
+    const segments = Array.isArray(rawSegments)
+        ? rawSegments
+            .map((segment, index) => {
+                const text = String(segment?.text || '').trim();
+                if (!text) {
+                    return null;
+                }
+
+                const startSec = Number.isFinite(Number(segment?.start)) ? Number(segment.start) : null;
+                const endSec = Number.isFinite(Number(segment?.end)) ? Number(segment.end) : null;
+
+                return {
+                    id: `segment_${index + 1}`,
+                    index,
+                    speaker: getDisplaySpeakerLabel(segment?.speaker, speakerRegistry),
+                    text,
+                    startSec: startSec !== null ? Number(startSec.toFixed(1)) : null,
+                    endSec: endSec !== null ? Number(endSec.toFixed(1)) : null,
+                    timeLabel: startSec !== null ? formatTimecode(startSec) : null
+                };
+            })
+            .filter(Boolean)
+        : [];
+
+    return {
+        segments,
+        timingMode: options.timingMode || 'aligned',
+        speakerMode: options.speakerMode || (segments.some((segment) => Boolean(segment.speaker)) ? 'explicit' : 'none')
+    };
+}
+
+function renderStructuredTranscript(structuredTranscript) {
+    const segments = Array.isArray(structuredTranscript?.segments) ? structuredTranscript.segments : [];
+
+    return segments
+        .map((segment) => {
+            const text = String(segment?.text || '').trim();
+            if (!text) {
+                return '';
+            }
+
+            const speaker = String(segment?.speaker || '').trim();
+            return speaker ? `${speaker}: ${text}` : text;
+        })
+        .filter(Boolean)
+        .join('\n\n')
+        .trim();
+}
+
+function hasNativeStructuredTranscript(structuredTranscript) {
+    return Array.isArray(structuredTranscript?.segments)
+        && structuredTranscript.segments.length > 0
+        && structuredTranscript.speakerMode === 'diarized';
+}
+
+function normalizeTranscriptSpeakerLabels(transcript) {
+    const { cleanedTranscript, normalizedBlocks } = prepareTranscriptBlocks(transcript);
+
+    if (!cleanedTranscript) {
+        return '';
+    }
+
+    return normalizedBlocks.map((block) => block.normalizedBlock).join('\n\n');
+}
+
+const AI_API_KEY = process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY;
+const AI_BASE_URL = process.env.GEMINI_BASE_URL || process.env.OPENAI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/openai/';
+const AI_FAST_MODEL = process.env.GEMINI_FAST_MODEL || process.env.AI_FAST_MODEL || 'gemini-3.1-flash-lite-preview';
+const AI_SPEAKER_MODEL = process.env.GEMINI_SPEAKER_MODEL || process.env.AI_SPEAKER_MODEL || AI_FAST_MODEL;
+const AI_DEFAULT_MODEL = process.env.GEMINI_MODEL || process.env.AI_MODEL || 'gemini-3.1-flash-lite-preview';
+const AI_SUMMARY_MODEL = process.env.GEMINI_SUMMARY_MODEL || process.env.AI_SUMMARY_MODEL || 'gemini-3.1-pro-preview';
+const GEMINI_TRANSCRIBE_MODEL = process.env.GEMINI_TRANSCRIBE_MODEL || 'gemini-3.1-flash-lite-preview';
+const WHISPER_MODEL = process.env.WHISPER_MODEL || 'medium';
+const WHISPER_DEVICE = process.env.WHISPER_DEVICE || 'cpu';
+const WHISPER_COMPUTE_TYPE = process.env.WHISPER_COMPUTE_TYPE || 'int8';
+const WHISPERX_MODEL = process.env.WHISPERX_MODEL || WHISPER_MODEL;
+const WHISPERX_DEVICE = process.env.WHISPERX_DEVICE || WHISPER_DEVICE;
+const WHISPERX_COMPUTE_TYPE = process.env.WHISPERX_COMPUTE_TYPE || WHISPER_COMPUTE_TYPE;
+const WHISPERX_MODEL_DIR = process.env.WHISPERX_MODEL_DIR || path.join(__dirname, '..', '..', 'models');
+const WHISPERX_DIARIZATION_MODEL = process.env.PYANNOTE_DIARIZATION_MODEL
+    || process.env.WHISPERX_DIARIZATION_MODEL
+    || 'pyannote/speaker-diarization-community-1';
+const WHISPERX_THREADS = Math.max(1, Number.parseInt(process.env.WHISPERX_THREADS || '4', 10) || 4);
+const WHISPERX_BATCH_SIZE = Math.max(
+    1,
+    Number.parseInt(process.env.WHISPERX_BATCH_SIZE || (WHISPERX_DEVICE === 'cuda' ? '16' : '8'), 10) || 8
+);
+const QWEN3_ASR_MODEL = process.env.QWEN3_ASR_MODEL || 'qwen3-asr-flash';
+const FUN_ASR_REALTIME_MODEL = process.env.FUN_ASR_REALTIME_MODEL || process.env.DASHSCOPE_ASR_MODEL || 'fun-asr-realtime-2026-02-28';
+const FUN_ASR_FILE_MODEL = process.env.FUN_ASR_FILE_MODEL || 'fun-asr';
+const DASHSCOPE_API_ROOT = process.env.DASHSCOPE_API_ROOT || 'https://dashscope.aliyuncs.com';
+const GEMINI_TRANSCRIBE_FALLBACK_MODELS = (process.env.GEMINI_TRANSCRIBE_FALLBACK_MODELS || `${AI_DEFAULT_MODEL},gemini-2.5-flash`)
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+const GEMINI_TRANSCRIBE_MODEL_CHAIN = [...new Set([GEMINI_TRANSCRIBE_MODEL, ...GEMINI_TRANSCRIBE_FALLBACK_MODELS])];
+const SUPPORTED_ASR_BACKENDS = ['auto', 'fun_asr_file_diarization', 'qwen3_asr', 'gemini_audio', 'fun_asr_realtime', 'whisperx_local', 'whisper_local'];
+const ASR_AUTO_BACKEND_ORDER = ['fun_asr_file_diarization', 'qwen3_asr', 'gemini_audio', 'fun_asr_realtime', 'whisperx_local', 'whisper_local'];
+const commandAvailabilityCache = new Map();
+let openaiClient = null;
+let geminiClient = null;
+
+console.log(`🎤 ASR 后端支持: ${SUPPORTED_ASR_BACKENDS.join(', ')}`);
+console.log(`🤖 AI兼容接口: ${AI_BASE_URL}`);
+console.log(`🤖 Gemini模型: fast=${AI_FAST_MODEL}, speaker=${AI_SPEAKER_MODEL}, default=${AI_DEFAULT_MODEL}`);
+console.log(`🤖 Gemini转录模型: ${GEMINI_TRANSCRIBE_MODEL_CHAIN.join(' -> ')}, summary=${AI_SUMMARY_MODEL}`);
+console.log(`🎧 Qwen3 ASR 模型: ${QWEN3_ASR_MODEL}`);
+console.log(`🎧 Fun-ASR 实时模型: ${FUN_ASR_REALTIME_MODEL}`);
+console.log(`🎧 Fun-ASR 录音文件模型: ${FUN_ASR_FILE_MODEL}`);
+console.log(`🌐 DashScope API Root: ${DASHSCOPE_API_ROOT}`);
+console.log(`🗣️ Local Whisper 默认配置: model=${WHISPER_MODEL}, device=${WHISPER_DEVICE}, compute=${WHISPER_COMPUTE_TYPE}`);
+console.log(`🧩 WhisperX 说话人分离配置: model=${WHISPERX_MODEL}, device=${WHISPERX_DEVICE}, compute=${WHISPERX_COMPUTE_TYPE}, diarization=${WHISPERX_DIARIZATION_MODEL}`);
+
+function getOpenAIClient() {
+    if (!AI_API_KEY) {
+        throw new Error('缺少 GEMINI_API_KEY 或 OPENAI_API_KEY，无法使用文本优化/总结模型');
+    }
+
+    if (!openaiClient) {
+        openaiClient = new OpenAI({
+            apiKey: AI_API_KEY,
+            baseURL: AI_BASE_URL,
+            timeout: 900000,
+            maxRetries: 0
+        });
+    }
+
+    return openaiClient;
+}
+
+function getGeminiClient() {
+    if (!AI_API_KEY) {
+        throw new Error('缺少 GEMINI_API_KEY 或 OPENAI_API_KEY，无法使用 Gemini Audio');
+    }
+
+    if (!geminiClient) {
+        geminiClient = new GoogleGenAI({ apiKey: AI_API_KEY });
+    }
+
+    return geminiClient;
+}
+
+function isTransientGeminiError(error) {
+    const message = String(error?.message || '');
+    const status = Number(error?.status || error?.code || 0);
+
+    return status === 429 || status === 500 || status === 503
+        || message.includes('"status":"UNAVAILABLE"')
+        || message.includes('"status":"RESOURCE_EXHAUSTED"')
+        || message.includes('"code":503')
+        || message.includes('"code":429');
+}
+
+function normalizeAsrBackend(backend) {
+    const normalized = String(backend || 'auto').trim().toLowerCase();
+    if (normalized === 'qwen_asr') {
+        return 'fun_asr_realtime';
+    }
+
+    return SUPPORTED_ASR_BACKENDS.includes(normalized) ? normalized : null;
+}
+
+function escapeShellArg(value) {
+    return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function getWhisperScriptPath() {
+    return path.join(__dirname, '..', 'whisper_transcribe.py');
+}
+
+function getWhisperXScriptPath() {
+    return path.join(__dirname, '..', 'whisperx_transcribe.py');
+}
+
+function getQwen3AsrScriptPath() {
+    return path.join(__dirname, '..', 'qwen3_asr.py');
+}
+
+function getDashScopeAsrScriptPath() {
+    return path.join(__dirname, '..', 'dashscope_asr.py');
+}
+
+function getFunAsrFileDiarizationScriptPath() {
+    return path.join(__dirname, '..', 'fun_asr_file_diarization.py');
+}
+
+function getWhisperPythonBin() {
+    if (process.env.WHISPER_PYTHON_BIN) {
+        return process.env.WHISPER_PYTHON_BIN;
+    }
+
+    const repoPython = path.join(__dirname, '..', '..', 'venv', 'bin', 'python');
+    if (fs.existsSync(repoPython)) {
+        return repoPython;
+    }
+
+    return 'python3';
+}
+
+function getPyannoteToken() {
+    return process.env.PYANNOTE_TOKEN
+        || process.env.HF_TOKEN
+        || process.env.HUGGINGFACE_TOKEN
+        || process.env.HUGGING_FACE_HUB_TOKEN
+        || '';
+}
+
+async function isCommandAvailable(command) {
+    const executable = String(command || '').trim().split(/\s+/)[0];
+    if (!executable) {
+        return false;
+    }
+
+    if (commandAvailabilityCache.has(executable)) {
+        return commandAvailabilityCache.get(executable);
+    }
+
+    try {
+        await execAsync(`command -v ${escapeShellArg(executable)}`, { timeout: 10000 });
+        commandAvailabilityCache.set(executable, true);
+        return true;
+    } catch (_error) {
+        commandAvailabilityCache.set(executable, false);
+        return false;
+    }
+}
+
+async function getBackendAvailability(backend, transcriptionOptions = {}) {
+    switch (backend) {
+        case 'qwen3_asr':
+            if (!process.env.DASHSCOPE_API_KEY) {
+                return { available: false, reason: '缺少 DASHSCOPE_API_KEY' };
+            }
+            if (!fs.existsSync(getQwen3AsrScriptPath())) {
+                return { available: false, reason: '缺少本地 qwen3_asr.py 脚本' };
+            }
+            if (!await isCommandAvailable(getWhisperPythonBin())) {
+                return { available: false, reason: `未找到 Python 可执行文件: ${getWhisperPythonBin()}` };
+            }
+            return { available: true };
+        case 'fun_asr_realtime':
+            if (!process.env.DASHSCOPE_API_KEY) {
+                return { available: false, reason: '缺少 DASHSCOPE_API_KEY' };
+            }
+            if (!fs.existsSync(getDashScopeAsrScriptPath())) {
+                return { available: false, reason: '缺少 Fun-ASR 实时转录脚本' };
+            }
+            if (!await isCommandAvailable(getWhisperPythonBin())) {
+                return { available: false, reason: `未找到 Python 可执行文件: ${getWhisperPythonBin()}` };
+            }
+            return { available: true };
+        case 'fun_asr_file_diarization':
+            if (!process.env.DASHSCOPE_API_KEY) {
+                return { available: false, reason: '缺少 DASHSCOPE_API_KEY' };
+            }
+            if (!transcriptionOptions.sourceAudioUrl) {
+                return { available: false, reason: '需要公网可访问的音频直链；本地文件和仅页面 URL 不支持' };
+            }
+            if (!fs.existsSync(getFunAsrFileDiarizationScriptPath())) {
+                return { available: false, reason: '缺少 Fun-ASR 录音文件脚本' };
+            }
+            if (!await isCommandAvailable(getWhisperPythonBin())) {
+                return { available: false, reason: `未找到 Python 可执行文件: ${getWhisperPythonBin()}` };
+            }
+            return { available: true };
+        case 'gemini_audio':
+            if (!AI_API_KEY) {
+                return { available: false, reason: '缺少 GEMINI_API_KEY 或 OPENAI_API_KEY' };
+            }
+            return { available: true };
+        case 'whisperx_local':
+            if (!fs.existsSync(getWhisperXScriptPath())) {
+                return { available: false, reason: '缺少本地 whisperx_transcribe.py 脚本' };
+            }
+            if (!await isCommandAvailable(getWhisperPythonBin())) {
+                return { available: false, reason: `未找到 Python 可执行文件: ${getWhisperPythonBin()}` };
+            }
+            if (!getPyannoteToken()) {
+                return { available: false, reason: '缺少 PYANNOTE_TOKEN / HF_TOKEN，无法加载 pyannote speaker diarization 模型' };
+            }
+            return { available: true };
+        case 'whisper_local':
+            if (!fs.existsSync(getWhisperScriptPath())) {
+                return { available: false, reason: '缺少本地 whisper_transcribe.py 脚本' };
+            }
+            if (!await isCommandAvailable(getWhisperPythonBin())) {
+                return { available: false, reason: `未找到 Python 可执行文件: ${getWhisperPythonBin()}` };
+            }
+            return { available: true };
+        default:
+            return { available: false, reason: `不支持的 ASR backend: ${backend}` };
+    }
+}
+
+function buildQwenContext(language, options = {}) {
+    const hotwords = normalizeHotwords(options.hotwords);
+    const transcriptionContext = normalizeOptionalText(options.transcriptionContext, 500);
+    const contextParts = [];
+
+    if (language && language !== 'auto') {
+        contextParts.push(`The spoken language is likely ${language}.`);
+    }
+
+    if (hotwords.length > 0) {
+        contextParts.push(`Prefer these spellings when heard: ${hotwords.join(', ')}.`);
+    }
+
+    if (transcriptionContext) {
+        contextParts.push(`Disambiguation context: ${transcriptionContext}`);
+    }
+
+    return contextParts.join(' ');
+}
+
+async function transcribeAudioWithWhisperLocal(audioPath, language = null, transcriptionOptions = {}) {
+    const pythonBin = getWhisperPythonBin();
+    const scriptPath = getWhisperScriptPath();
+    const args = [
+        scriptPath,
+        audioPath,
+        '--model',
+        WHISPER_MODEL,
+        '--device',
+        WHISPER_DEVICE,
+        '--compute-type',
+        WHISPER_COMPUTE_TYPE
+    ];
+
+    if (language && language !== 'auto') {
+        args.push('--language', language);
+    }
+
+    const prompt = buildTranscriptionPrompt(language, transcriptionOptions);
+    if (prompt) {
+        args.push('--prompt', prompt);
+    }
+
+    const { stdout } = await execFileAsync(pythonBin, args, {
+        timeout: 60 * 60 * 1000,
+        maxBuffer: 1024 * 1024 * 20
+    });
+    const result = JSON.parse(stdout);
+
+    if (!result?.success) {
+        throw new Error(result?.error || 'Whisper 本地转录失败');
+    }
+
+    return {
+        text: String(result.text || '').trim(),
+        language: result.language || null,
+        audioDuration: Number.isFinite(result.duration) ? result.duration : await probeAudioDuration(audioPath),
+        backendUsed: 'whisper_local'
+    };
+}
+
+async function transcribeAudioWithWhisperXLocal(audioPath, language = null, transcriptionOptions = {}) {
+    const pythonBin = getWhisperPythonBin();
+    const scriptPath = getWhisperXScriptPath();
+    const args = [
+        scriptPath,
+        audioPath,
+        '--model',
+        WHISPERX_MODEL,
+        '--device',
+        WHISPERX_DEVICE,
+        '--compute-type',
+        WHISPERX_COMPUTE_TYPE,
+        '--model-dir',
+        WHISPERX_MODEL_DIR,
+        '--diarization-model',
+        WHISPERX_DIARIZATION_MODEL,
+        '--batch-size',
+        String(WHISPERX_BATCH_SIZE),
+        '--threads',
+        String(WHISPERX_THREADS)
+    ];
+
+    if (language && language !== 'auto') {
+        args.push('--language', language);
+    }
+
+    const prompt = buildTranscriptionPrompt(language, transcriptionOptions);
+    if (prompt) {
+        args.push('--prompt', prompt);
+    }
+
+    const { stdout } = await execFileAsync(pythonBin, args, {
+        timeout: 2 * 60 * 60 * 1000,
+        maxBuffer: 1024 * 1024 * 40,
+        env: {
+            ...process.env,
+            PYANNOTE_TOKEN: getPyannoteToken()
+        }
+    });
+
+    const result = JSON.parse(stdout);
+    if (!result?.success) {
+        throw new Error(result?.error || 'WhisperX 本地转录失败');
+    }
+
+    const structuredTranscript = buildStructuredTranscriptFromSegments(result.segments, {
+        timingMode: result.timing_mode || 'aligned',
+        speakerMode: result.speaker_mode || 'diarized'
+    });
+    const transcript = String(result.text || '').trim() || renderStructuredTranscript(structuredTranscript);
+
+    if (!transcript) {
+        throw new Error('WhisperX 返回了空转录结果');
+    }
+
+    return {
+        text: transcript,
+        language: result.language || null,
+        audioDuration: Number.isFinite(result.duration) ? result.duration : await probeAudioDuration(audioPath),
+        backendUsed: 'whisperx_local',
+        structuredTranscript
+    };
+}
+
+async function transcribeAudioWithQwen3Asr(audioPath, language = null, transcriptionOptions = {}) {
+    const pythonBin = getWhisperPythonBin();
+    const scriptPath = getQwen3AsrScriptPath();
+    const args = [
+        scriptPath,
+        audioPath,
+        '--model',
+        QWEN3_ASR_MODEL,
+        '--num-threads',
+        '4',
+        '--vad-segment-threshold',
+        '120'
+    ];
+
+    const context = buildQwenContext(language, transcriptionOptions);
+    if (context) {
+        args.push('--context', context);
+    }
+
+    const { stdout } = await execFileAsync(pythonBin, args, {
+        timeout: 2 * 60 * 60 * 1000,
+        maxBuffer: 1024 * 1024 * 40,
+        env: {
+            ...process.env,
+            DASHSCOPE_API_KEY: process.env.DASHSCOPE_API_KEY
+        }
+    });
+
+    const result = JSON.parse(stdout);
+    if (!result?.success) {
+        throw new Error(result?.error || 'Qwen3-ASR 转录失败');
+    }
+
+    const transcript = String(result.text || '').trim();
+    if (!transcript) {
+        throw new Error('Qwen3-ASR 返回了空转录结果');
+    }
+
+    return {
+        text: transcript,
+        language: result.language || null,
+        audioDuration: Number.isFinite(result.duration) ? result.duration : await probeAudioDuration(audioPath),
+        backendUsed: 'qwen3_asr'
+    };
+}
+
+async function transcribeAudioWithFunAsrRealtime(audioPath, language = null, transcriptionOptions = {}) {
+    const pythonBin = getWhisperPythonBin();
+    const scriptPath = getDashScopeAsrScriptPath();
+    const args = [scriptPath, audioPath, '--model', FUN_ASR_REALTIME_MODEL];
+
+    if (language && language !== 'auto') {
+        args.push('--language', language);
+    }
+
+    const { stdout } = await execFileAsync(pythonBin, args, {
+        timeout: 60 * 60 * 1000,
+        maxBuffer: 1024 * 1024 * 20,
+        env: {
+            ...process.env,
+            DASHSCOPE_API_KEY: process.env.DASHSCOPE_API_KEY
+        }
+    });
+
+    const result = JSON.parse(stdout);
+    if (!result?.success) {
+        throw new Error(result?.error || 'DashScope ASR 转录失败');
+    }
+
+    const transcript = String(result.text || '').trim();
+    if (!transcript) {
+        throw new Error('DashScope ASR 返回了空转录结果');
+    }
+
+    return {
+        text: transcript,
+        language: result.language || null,
+        audioDuration: await probeAudioDuration(audioPath),
+        backendUsed: 'fun_asr_realtime'
+    };
+}
+
+async function transcribeAudioWithFunAsrFileDiarization(_audioPath, language = null, transcriptionOptions = {}) {
+    const sourceAudioUrl = String(transcriptionOptions.sourceAudioUrl || '').trim();
+    if (!sourceAudioUrl) {
+        throw new Error('Fun-ASR 录音文件识别需要公网可访问的音频直链');
+    }
+
+    const pythonBin = getWhisperPythonBin();
+    const scriptPath = getFunAsrFileDiarizationScriptPath();
+    const args = [
+        scriptPath,
+        '--file-url',
+        sourceAudioUrl,
+        '--model',
+        FUN_ASR_FILE_MODEL,
+        '--api-root',
+        DASHSCOPE_API_ROOT
+    ];
+
+    const { stdout } = await execFileAsync(pythonBin, args, {
+        timeout: 2 * 60 * 60 * 1000,
+        maxBuffer: 1024 * 1024 * 40,
+        env: {
+            ...process.env,
+            DASHSCOPE_API_KEY: process.env.DASHSCOPE_API_KEY
+        }
+    });
+
+    const result = JSON.parse(stdout);
+    if (!result?.success) {
+        throw new Error(result?.error || 'Fun-ASR 录音文件转录失败');
+    }
+
+    const structuredTranscript = buildStructuredTranscriptFromSegments(result.segments, {
+        timingMode: result.timing_mode || 'provided',
+        speakerMode: result.speaker_mode || 'diarized'
+    });
+    const transcript = renderStructuredTranscript(structuredTranscript) || String(result.text || '').trim();
+    if (!transcript) {
+        throw new Error('Fun-ASR 录音文件识别返回了空转录结果');
+    }
+
+    return {
+        text: transcript,
+        language: language && language !== 'auto' ? language : null,
+        audioDuration: Number.isFinite(result.duration) ? result.duration : null,
+        backendUsed: 'fun_asr_file_diarization',
+        structuredTranscript
+    };
+}
+
+async function transcribeAudioWithBackend(audioPath, backend, language = null, transcriptionOptions = {}) {
+    switch (backend) {
+        case 'qwen3_asr':
+            return transcribeAudioWithQwen3Asr(audioPath, language, transcriptionOptions);
+        case 'gemini_audio': {
+            const transcript = await transcribeAudioWithGemini(audioPath, language, false, null, null, null, transcriptionOptions);
+            return {
+                text: transcript,
+                language: detectTranscriptLanguage(transcript, language),
+                audioDuration: await probeAudioDuration(audioPath),
+                backendUsed: 'gemini_audio'
+            };
+        }
+        case 'fun_asr_realtime':
+            return transcribeAudioWithFunAsrRealtime(audioPath, language, transcriptionOptions);
+        case 'fun_asr_file_diarization':
+            return transcribeAudioWithFunAsrFileDiarization(audioPath, language, transcriptionOptions);
+        case 'whisperx_local':
+            return transcribeAudioWithWhisperXLocal(audioPath, language, transcriptionOptions);
+        case 'whisper_local':
+            return transcribeAudioWithWhisperLocal(audioPath, language, transcriptionOptions);
+        default:
+            throw new Error(`不支持的 ASR backend: ${backend}`);
+    }
+}
+
+async function transcribeAudioWithConfiguredBackend(audioPath, requestedBackend = 'auto', language = null, transcriptionOptions = {}) {
+    const normalizedBackend = normalizeAsrBackend(requestedBackend);
+    if (!normalizedBackend) {
+        throw new Error(`无效的 ASR backend: ${requestedBackend}`);
+    }
+
+    if (normalizedBackend !== 'auto') {
+        const availability = await getBackendAvailability(normalizedBackend, transcriptionOptions);
+        if (!availability.available) {
+            throw new Error(`${normalizedBackend} 不可用: ${availability.reason}`);
+        }
+
+        return transcribeAudioWithBackend(audioPath, normalizedBackend, language, transcriptionOptions);
+    }
+
+    const errors = [];
+    for (const backend of ASR_AUTO_BACKEND_ORDER) {
+        const availability = await getBackendAvailability(backend, transcriptionOptions);
+        if (!availability.available) {
+            errors.push(`${backend}: ${availability.reason}`);
+            continue;
+        }
+
+        try {
+            return await transcribeAudioWithBackend(audioPath, backend, language, transcriptionOptions);
+        } catch (error) {
+            errors.push(`${backend}: ${error.message}`);
+        }
+    }
+
+    throw new Error(`auto 模式下没有可用 ASR backend。${errors.join(' | ')}`);
+}
+
+async function finalizeTranscriptPipeline(rawTranscript, options = {}) {
+    const {
+        shouldSummarize = false,
+        outputLanguage = 'zh',
+        detectedLanguage,
+        audioLanguage = 'auto',
+        audioDuration = null,
+        outputContext = null,
+        originalUrl = null,
+        podcastTitle = null,
+        structuredTranscript = null,
+        sessionId = null,
+        sendProgressCallback = null
+    } = options;
+
+    const result = {
+        summary: null,
+        translation: null,
+        needsTranslation: false
+    };
+
+    const nativeStructuredTranscript = hasNativeStructuredTranscript(structuredTranscript) ? structuredTranscript : null;
+    const summarySourceTranscript = String(rawTranscript || '').trim();
+    let transcript = nativeStructuredTranscript
+        ? renderStructuredTranscript(nativeStructuredTranscript)
+        : summarySourceTranscript;
+    const originalTranscript = summarySourceTranscript;
+    const savedFiles = [];
+
+    if (!nativeStructuredTranscript) {
+        if (sessionId && sendProgressCallback) {
+            sendProgressCallback(sessionId, 50, 'optimizing', outputLanguage === 'zh' ? '优化转录文本' : 'Optimizing transcript');
+        }
+
+        let optimizedTranscript = transcript;
+        let optimizationSuccess = false;
+        for (let retryCount = 0; retryCount < 3; retryCount += 1) {
+            try {
+                console.log(`📝 开始智能优化转录文本${retryCount > 0 ? ` (重试 ${retryCount}/3)` : ''}...`);
+                optimizedTranscript = await formatTranscriptText(transcript, detectTranscriptLanguage(transcript, audioLanguage));
+                optimizationSuccess = true;
+                break;
+            } catch (optimizationError) {
+                console.error(`❌ 文本优化失败 (尝试 ${retryCount + 1}/3): ${optimizationError.message}`);
+                if (retryCount < 2) {
+                    await new Promise((resolve) => setTimeout(resolve, (retryCount + 1) * 3000));
+                }
+            }
+        }
+
+        if (optimizationSuccess) {
+            transcript = optimizedTranscript;
+        } else {
+            console.warn('🔄 AI优化失败，保留原始转录文本');
+        }
+
+        if (sessionId && sendProgressCallback) {
+            sendProgressCallback(sessionId, 62, 'speaker_refining', outputLanguage === 'zh' ? '细化说话人轮次' : 'Refining speaker turns');
+        }
+
+        transcript = await refineTranscriptSpeakerTurns(
+            transcript,
+            detectTranscriptLanguage(transcript, audioLanguage)
+        );
+
+        const speakerNormalizedTranscript = normalizeTranscriptSpeakerLabels(transcript);
+        if (speakerNormalizedTranscript) {
+            transcript = speakerNormalizedTranscript;
+        }
+    } else {
+        console.log('🎙️ 检测到真实 diarization 结果，跳过文本级说话人推断');
+    }
+
+    if (outputContext) {
+        savedFiles.push(
+            writeManagedTextFile(
+                formatTranscriptAsMarkdown(transcript, podcastTitle, originalUrl),
+                'transcript',
+                outputContext,
+                '.md'
+            )
+        );
+
+        if (transcript !== originalTranscript && originalTranscript) {
+            savedFiles.push(
+                writeManagedTextFile(
+                    formatTranscriptAsMarkdown(originalTranscript, podcastTitle, originalUrl),
+                    'original_transcript',
+                    outputContext,
+                    '.md'
+                )
+            );
+        }
+    }
+
+    const analysisTranscript = nativeStructuredTranscript ? (summarySourceTranscript || transcript) : transcript;
+
+    if (shouldSummarize) {
+        if (sessionId && sendProgressCallback) {
+            sendProgressCallback(sessionId, 70, 'summary', outputLanguage === 'zh' ? '总结' : 'Summary');
+        }
+
+        result.summary = await generateSummary(analysisTranscript, outputLanguage);
+        if (outputContext) {
+            savedFiles.push(
+                writeManagedTextFile(
+                    formatSummaryAsMarkdown(result.summary, podcastTitle, outputLanguage, originalUrl),
+                    'summary',
+                    outputContext,
+                    '.md'
+                )
+            );
+        }
+    }
+
+    const normalizedDetectedLanguage = detectedLanguage || detectTranscriptLanguage(transcript, audioLanguage);
+    if (normalizedDetectedLanguage && needsTranslation(normalizedDetectedLanguage, outputLanguage)) {
+        try {
+            result.translation = await translateTranscript(transcript, normalizedDetectedLanguage, outputLanguage);
+            result.needsTranslation = true;
+
+            if (outputContext) {
+                savedFiles.push(
+                    writeManagedTextFile(
+                        formatTranslationAsMarkdown(result.translation, podcastTitle, outputLanguage, originalUrl),
+                        'translation',
+                        outputContext,
+                        '.md'
+                    )
+                );
+            }
+        } catch (error) {
+            console.error('❌ 翻译过程失败:', error.message);
+        }
+    }
+
+    return {
+        transcript,
+        summary: result.summary,
+        translation: result.translation,
+        needsTranslation: result.needsTranslation,
+        detectedLanguage: normalizedDetectedLanguage,
+        audioDuration,
+        savedFiles,
+        structuredTranscript: nativeStructuredTranscript || buildStructuredTranscript(transcript, audioDuration)
+    };
+}
 
 /**
  * 处理音频文件（单个或多个片段）
@@ -83,222 +1402,59 @@ const openai = new OpenAI({
  * @param {string} outputLanguage - 输出语言
  * @returns {Promise<Object>} - 处理结果
  */
-async function processAudioWithOpenAI(audioFiles, shouldSummarize = false, outputLanguage = 'zh', tempDir = null, audioLanguage = 'auto', originalUrl = null, sessionId = null, sendProgressCallback = null, podcastTitle = null) {
+async function processAudioWithOpenAI(audioFiles, shouldSummarize = false, outputLanguage = 'zh', tempDir = null, audioLanguage = 'auto', originalUrl = null, sessionId = null, sendProgressCallback = null, podcastTitle = null, transcriptionOptions = {}) {
     try {
-        console.log(`🤖 开始音频处理 - OpenAI`);
-        
-        // 确保 audioFiles 是数组
-        const files = Array.isArray(audioFiles) ? audioFiles : [audioFiles];
-        console.log(`📄 处理文件数量: ${files.length}`);
-
-        let transcript = '';
-        let savedFiles = [];
-
-        if (files.length === 1) {
-            // 单文件处理 - Python脚本总是保存转录文本
-            console.log(`🎵 单文件处理模式`);
-            
-            // Python脚本转录并直接保存转录文本
-            const scriptPath = path.join(__dirname, '..', 'whisper_transcribe.py');
-            const filePrefix = generateFilePrefix('raw', podcastTitle || 'Untitled');
-            const venvPython = path.join(__dirname, '..', '..', 'venv', 'bin', 'python');
-            const command = `"${venvPython}" "${scriptPath}" "${files[0]}" --model ${process.env.WHISPER_MODEL || 'base'} --save-transcript "${tempDir}" --file-prefix "${filePrefix}" --podcast-title "${podcastTitle || 'Untitled'}" --source-url "${originalUrl || ''}"`;
-            
-            console.log(`🎤 Python脚本转录并保存: ${path.basename(files[0])}`);
-            console.log(`⚙️ 执行命令: ${command}`);
-            
-            const { stdout, stderr } = await execAsync(command, {
-                cwd: path.join(__dirname, '..'),
-                maxBuffer: 1024 * 1024 * 20,
-                timeout: 3600000 // 1小时超时，支持长音频
-            });
-            
-            if (stderr && stderr.trim()) {
-                console.log(`🔧 Whisper日志: ${stderr.trim()}`);
-            }
-            
-            const result = JSON.parse(stdout);
-            
-            if (!result.success) {
-                throw new Error(result.error || '转录失败');
-            }
-            
-            transcript = result.text || '';
-            savedFiles = result.savedFiles || [];
-            
-            // 获取检测到的语言信息
-            result.detectedLanguage = result.language || audioLanguage || 'auto';
-            
-            console.log(`✅ Python脚本转录完成: ${transcript.length} 字符`);
-            console.log(`🌐 检测到语言: ${result.detectedLanguage}`);
-            console.log(`💾 Python脚本保存了 ${savedFiles.length} 个文件`);
-
-            // 对转录文本进行智能优化（错别字修正+格式化）
-            let optimizedTranscript = transcript; // 默认使用原始文本
-            let optimizationSuccess = false;
-            
-            // 发送优化阶段进度
-            if (sendProgressCallback) {
-                sendProgressCallback(50, 'optimizing', outputLanguage === 'zh' ? '优化转录文本' : 'Optimizing transcript');
-            }
-            
-            for (let retryCount = 0; retryCount < 3; retryCount++) {
-                try {
-                    console.log(`📝 开始智能优化转录文本${retryCount > 0 ? ` (重试 ${retryCount}/3)` : ''}...`);
-                    // 检测转录文本的实际语言，用于优化提示词
-                    const detectedLanguage = detectTranscriptLanguage(transcript, audioLanguage);
-                    optimizedTranscript = await formatTranscriptText(transcript, detectedLanguage);
-                    optimizationSuccess = true;
-                    break;
-                } catch (optimizationError) {
-                    console.error(`❌ 文本优化失败 (尝试 ${retryCount + 1}/3): ${optimizationError.message}`);
-                    if (retryCount < 2) {
-                        console.log(`⏳ 等待 ${(retryCount + 1) * 3} 秒后重试...`);
-                        await new Promise(resolve => setTimeout(resolve, (retryCount + 1) * 3000));
-                    }
-                }
-            }
-            
-            if (optimizationSuccess) {
-                // 保存原始转录备份和优化后的文本
-                if (savedFiles.length > 0) {
-                    const transcriptFile = savedFiles.find(f => f.type === 'transcript');
-                    if (transcriptFile && fs.existsSync(transcriptFile.path)) {
-                        // 备份原始转录文件
-                        const originalBackupPath = transcriptFile.path.replace('.md', '_original.md');
-                        if (!fs.existsSync(originalBackupPath)) {
-                            fs.copyFileSync(transcriptFile.path, originalBackupPath);
-                            console.log(`💾 原始转录已备份: ${path.basename(originalBackupPath)}`);
-                        }
-                        
-                        // 保存优化后的文本
-                        fs.writeFileSync(transcriptFile.path, optimizedTranscript, 'utf8');
-                        console.log(`📄 优化文本已保存: ${transcriptFile.filename}`);
-                        
-                        // 添加备份文件到结果中
-                        savedFiles.push({
-                            type: 'original_transcript',
-                            filename: path.basename(originalBackupPath),
-                            path: originalBackupPath,
-                            size: fs.statSync(originalBackupPath).size
-                        });
-                    }
-                }
-                // 更新结果
-                transcript = optimizedTranscript;
-            } else {
-                console.warn(`🔄 AI优化失败，保留原始转录文本`);
-                // 保持原始transcript不变，确保转录结果不丢失
-            }
-            
-            // 如果需要总结，使用优化后的转录文本进行AI总结
-            if (shouldSummarize) {
-                console.log(`📝 开始生成总结...`);
-                if (sessionId && sendProgressCallback) {
-                    const stageText = outputLanguage === 'zh' ? '总结' : 'Summary';
-                    sendProgressCallback(sessionId, 70, 'summary', stageText);
-                }
-                const summary = await generateSummary(transcript, outputLanguage);
-                
-                // 保存AI总结（Markdown格式）
-                const summaryPrefix = generateFilePrefix('summary', podcastTitle || 'Untitled');
-                const summaryFileName = `${summaryPrefix}.md`;
-                const summaryPath = path.join(tempDir, summaryFileName);
-                const markdownSummary = formatSummaryAsMarkdown(summary, podcastTitle, outputLanguage, originalUrl);
-                fs.writeFileSync(summaryPath, markdownSummary, 'utf8');
-                
-                savedFiles.push({
-                    type: 'summary',
-                    filename: summaryFileName,
-                    path: summaryPath,
-                    size: fs.statSync(summaryPath).size
-                });
-                
-                console.log(`📋 AI总结已保存: ${summaryFileName}`);
-                
-                // 更新result中的summary
-                result.summary = summary;
-            }
-            
-            // 检查是否需要翻译
-            if (result.detectedLanguage && needsTranslation(result.detectedLanguage, outputLanguage)) {
-                console.log(`🌍 检测到语言差异 (${result.detectedLanguage} ≠ ${outputLanguage})，开始翻译...`);
-                
-                try {
-                    const translatedTranscript = await translateTranscript(transcript, result.detectedLanguage, outputLanguage);
-                    
-                    // 保存翻译结果（Markdown格式）
-                    const translationPrefix = generateFilePrefix('translation', podcastTitle || 'Untitled');
-                    const translationFileName = `${translationPrefix}.md`;
-                    const translationPath = path.join(tempDir, translationFileName);
-                    const markdownTranslation = formatTranslationAsMarkdown(translatedTranscript, podcastTitle, outputLanguage, originalUrl);
-                    fs.writeFileSync(translationPath, markdownTranslation, 'utf8');
-                    
-                    savedFiles.push({
-                        type: 'translation',
-                        filename: translationFileName,
-                        path: translationPath,
-                        size: fs.statSync(translationPath).size
-                    });
-                    
-                    console.log(`🌍 翻译已保存: ${translationFileName}`);
-                    
-                    // 更新result中的translation信息
-                    result.translation = translatedTranscript;
-                    result.needsTranslation = true;
-                } catch (error) {
-                    console.error('❌ 翻译过程失败:', error.message);
-                    result.needsTranslation = false;
-                }
-            } else {
-                console.log(`✅ 无需翻译 (语言一致: ${result.detectedLanguage} = ${outputLanguage})`);
-                result.needsTranslation = false;
-            }
-            // 返回处理后的结果
-            return {
-                transcript: transcript,
-                summary: result.summary || null, // 如果有总结则包含
-                translation: result.translation || null, // 如果有翻译则包含
-                language: outputLanguage,
-                detectedLanguage: result.detectedLanguage,
-                needsTranslation: result.needsTranslation || false,
-                audioDuration: result.audioDuration, // 从Whisper获取的真实音频时长
-                savedFiles: savedFiles
-            };
-            
-        } else {
-            // 多文件并发处理
-            console.log(`🎬 多文件并发处理模式`);
-            const transcribeResult = await transcribeMultipleAudios(files, outputLanguage, !shouldSummarize && tempDir, tempDir);
-            
-            // 处理返回值（可能是字符串或对象）
-            let transcript;
-            let savedFiles = [];
-            
-            if (typeof transcribeResult === 'object' && transcribeResult.text) {
-                transcript = transcribeResult.text;
-                savedFiles = transcribeResult.savedFiles || [];
-            } else {
-                transcript = transcribeResult;
-            }
-            
-            let finalResult = {
-                transcript: transcript,
-                language: outputLanguage,
-                savedFiles: savedFiles
-            };
-
-            if (shouldSummarize) {
-                console.log(`📝 开始生成总结...`);
-                const summary = await generateSummary(transcript, outputLanguage);
-                finalResult.summary = summary;
-            }
-            
-            return finalResult;
+        const requestedBackend = normalizeAsrBackend(transcriptionOptions.asrBackend || 'auto');
+        if (!requestedBackend) {
+            throw new Error(`无效的 ASR backend: ${transcriptionOptions.asrBackend}`);
         }
 
+        console.log(`🤖 开始音频处理 - ASR backend=${requestedBackend}`);
+        const files = Array.isArray(audioFiles) ? audioFiles : [audioFiles];
+        console.log(`📄 处理文件数量: ${files.length}`);
+        const outputContext = tempDir
+            ? createOutputContext(podcastTitle || 'Untitled', {
+                createdAt: new Date(),
+                runKey: Math.random().toString(36).slice(2, 8)
+            })
+            : null;
+        const asrResult = files.length === 1
+            ? await transcribeAudioWithConfiguredBackend(files[0], requestedBackend, audioLanguage, transcriptionOptions)
+            : await transcribeMultipleAudios(files, requestedBackend, outputLanguage, audioLanguage, transcriptionOptions);
+
+        console.log(`✅ ASR 完成: backend=${asrResult.backendUsed}, chars=${asrResult.text.length}`);
+        console.log(`🌐 检测到语言: ${asrResult.language || 'unknown'}`);
+
+        const finalized = await finalizeTranscriptPipeline(asrResult.text, {
+            shouldSummarize,
+            outputLanguage,
+            detectedLanguage: asrResult.language || null,
+            audioLanguage,
+            audioDuration: asrResult.audioDuration || null,
+            outputContext,
+            originalUrl,
+            podcastTitle,
+            structuredTranscript: asrResult.structuredTranscript || null,
+            sessionId,
+            sendProgressCallback
+        });
+
+        return {
+            transcript: finalized.transcript,
+            summary: finalized.summary,
+            translation: finalized.translation,
+            language: outputLanguage,
+            detectedLanguage: finalized.detectedLanguage,
+            needsTranslation: finalized.needsTranslation,
+            audioDuration: finalized.audioDuration,
+            savedFiles: finalized.savedFiles,
+            structuredTranscript: finalized.structuredTranscript,
+            asrBackendRequested: requestedBackend,
+            asrBackendUsed: asrResult.backendUsed
+        };
+
     } catch (error) {
-        console.error('❌ OpenAI处理失败:', error);
+        console.error('❌ 音频处理失败:', error);
         throw error;
     }
 }
@@ -309,120 +1465,87 @@ async function processAudioWithOpenAI(audioFiles, shouldSummarize = false, outpu
  * @param {string} outputLanguage - 总结输出语言（不影响转录语言）
  * @returns {Promise<string>} - 优化后的完整转录文本
  */
-async function transcribeMultipleAudios(audioFiles, outputLanguage, shouldSaveDirectly = false, tempDir = null) {
+async function transcribeMultipleAudios(audioFiles, requestedBackend = 'auto', outputLanguage = 'zh', audioLanguage = 'auto', transcriptionOptions = {}) {
     try {
-        console.log(`🔄 开始串行转录 ${audioFiles.length} 个音频片段（避免API过载）...`);
-        
-        // 分批处理音频片段，避免并发过载，使用重试机制
-        const batchSize = 1; // 每批最多1个文件 - 完全串行处理
+        console.log(`🔄 开始串行转录 ${audioFiles.length} 个音频片段...`);
         const transcriptions = [];
-        let allSavedFiles = []; // 收集所有保存的文件
-        
-        for (let i = 0; i < audioFiles.length; i += batchSize) {
-            const batch = audioFiles.slice(i, i + batchSize);
-            console.log(`🔄 处理批次 ${Math.floor(i/batchSize) + 1}/${Math.ceil(audioFiles.length/batchSize)}: ${batch.length} 个文件`);
-            
-            const batchPromises = batch.map(async (file, batchIndex) => {
-                const index = i + batchIndex;
-                let retryCount = 0;
-                const maxRetries = 2;
-                
-                while (retryCount <= maxRetries) {
-                    try {
-                        console.log(`   🎵 开始转录片段 ${index + 1}/${audioFiles.length}: ${path.basename(file)} ${retryCount > 0 ? `(重试 ${retryCount})` : ''}`);
-                        
-                        // 使用新的本地转录函数，支持保存参数
-                        const result = await transcribeAudioLocal(file, null, shouldSaveDirectly, tempDir, originalUrl);
-                        const transcript = typeof result === 'string' ? result : result.text || '';
-                        
-                        console.log(`   ✅ 片段 ${index + 1} 转录完成 (${transcript.length} 字符)`);
-                        
-                        // 如果有保存的文件信息，收集起来
-                        if (typeof result === 'object' && result.savedFiles) {
-                            allSavedFiles = allSavedFiles.concat(result.savedFiles);
-                        }
-                        
-                        return {
+
+        for (let index = 0; index < audioFiles.length; index += 1) {
+            const file = audioFiles[index];
+            let retryCount = 0;
+            const maxRetries = 2;
+
+            while (retryCount <= maxRetries) {
+                try {
+                    console.log(`   🎵 开始转录片段 ${index + 1}/${audioFiles.length}: ${path.basename(file)} ${retryCount > 0 ? `(重试 ${retryCount})` : ''}`);
+                    const result = await transcribeAudioWithConfiguredBackend(file, requestedBackend, audioLanguage, transcriptionOptions);
+                    transcriptions.push({
+                        index,
+                        text: result.text,
+                        language: result.language,
+                        audioDuration: result.audioDuration,
+                        backendUsed: result.backendUsed,
+                        success: true
+                    });
+                    break;
+                } catch (error) {
+                    retryCount += 1;
+                    if (retryCount <= maxRetries) {
+                        console.warn(`   ⚠️ 片段 ${index + 1} 转录失败，准备重试 ${retryCount}/${maxRetries}: ${error.message}`);
+                        await new Promise((resolve) => setTimeout(resolve, 3000 * retryCount));
+                    } else {
+                        console.error(`   ❌ 片段 ${index + 1} 转录最终失败:`, error);
+                        transcriptions.push({
                             index,
-                            text: transcript,
-                            filename: path.basename(file),
-                            success: true
-                        };
-                    } catch (error) {
-                        retryCount++;
-                        if (retryCount <= maxRetries) {
-                            console.log(`   ⚠️ 片段 ${index + 1} 转录失败，准备重试 ${retryCount}/${maxRetries}: ${error.message}`);
-                            // 等待一段时间再重试 - 增加延迟防止连接重置
-                            await new Promise(resolve => setTimeout(resolve, 3000 * retryCount));
-                        } else {
-                            console.error(`   ❌ 片段 ${index + 1} 转录最终失败:`, error);
-                            return {
-                                index,
-                                text: null, // 标记为失败，不提供错误文本
-                                filename: path.basename(file),
-                                success: false,
-                                error: error.message
-                            };
-                        }
+                            text: null,
+                            success: false,
+                            error: error.message
+                        });
                     }
                 }
-            });
-            
-            // 等待当前批次完成
-            const batchResults = await Promise.all(batchPromises);
-            transcriptions.push(...batchResults);
-            
-            // 批次间添加短暂延迟，避免API压力
-            if (i + batchSize < audioFiles.length) {
-                console.log(`⏳ 批次间休息5秒，避免API过载...`);
-                await new Promise(resolve => setTimeout(resolve, 5000));
+            }
+
+            if (index < audioFiles.length - 1) {
+                await new Promise((resolve) => setTimeout(resolve, 3000));
             }
         }
 
-        // 按顺序排列转录结果
         transcriptions.sort((a, b) => a.index - b.index);
-        
-        // 统计成功和失败的片段
-        const successfulTranscriptions = transcriptions.filter(t => t.success && t.text);
+        const successfulTranscriptions = transcriptions.filter((item) => item.success && item.text);
         const failedCount = transcriptions.length - successfulTranscriptions.length;
-        
         console.log(`📋 转录完成统计: ${successfulTranscriptions.length}/${transcriptions.length} 成功, ${failedCount} 失败`);
-        
+
         if (successfulTranscriptions.length === 0) {
             throw new Error('所有音频片段转录都失败了。请检查网络连接和API配置，或稍后重试。');
         }
-        
+
         if (failedCount > 0) {
             console.warn(`⚠️ ${failedCount} 个片段转录失败，将基于 ${successfulTranscriptions.length} 个成功片段继续处理`);
         }
-        
-        // 只拼接成功的转录文本
-        const rawTranscript = successfulTranscriptions
-            .map(t => t.text)
-            .join('\n\n');
 
+        const rawTranscript = successfulTranscriptions
+            .map((item) => item.text)
+            .join('\n\n');
         console.log(`📊 有效转录内容: ${rawTranscript.length} 字符`);
-        
-        // 检查是否有足够的内容进行优化
+
         if (rawTranscript.length < 50) {
             console.warn('⚠️ 转录内容太少，跳过AI优化');
-            return rawTranscript;
-        }
-        
-        // 使用AI优化拼接的文本
-        const optimizedTranscript = await optimizeTranscriptContinuity(rawTranscript, outputLanguage);
-        
-        console.log(`✨ 文本优化完成: ${optimizedTranscript.length} 字符`);
-        
-        // 如果有保存文件，返回对象；否则返回字符串（保持向后兼容）
-        if (allSavedFiles.length > 0) {
             return {
-                text: optimizedTranscript,
-                savedFiles: allSavedFiles
+                text: rawTranscript,
+                language: successfulTranscriptions[0].language || null,
+                audioDuration: successfulTranscriptions.reduce((sum, item) => sum + (item.audioDuration || 0), 0) || null,
+                backendUsed: successfulTranscriptions[0].backendUsed || requestedBackend
             };
         }
-        
-        return optimizedTranscript;
+
+        const optimizedTranscript = await optimizeTranscriptContinuity(rawTranscript, outputLanguage);
+        console.log(`✨ 文本优化完成: ${optimizedTranscript.length} 字符`);
+        return {
+            text: optimizedTranscript,
+            language: successfulTranscriptions[0].language || null,
+            audioDuration: successfulTranscriptions.reduce((sum, item) => sum + (item.audioDuration || 0), 0) || null,
+            backendUsed: successfulTranscriptions[0].backendUsed || requestedBackend
+        };
 
     } catch (error) {
         console.error('❌ 多文件转录失败:', error);
@@ -431,103 +1554,128 @@ async function transcribeMultipleAudios(audioFiles, outputLanguage, shouldSaveDi
 }
 
 /**
- * 使用本地Faster-Whisper转录音频
+ * 使用 Gemini 直接转录音频
  * @param {string} audioPath - 音频文件路径
- * @param {string} language - 语言代码（可选）
- * @returns {Promise<string>} - 转录文本
+ * @param {string} language - 用户指定的语言代码（可选）
+ * @returns {Promise<Object|string>} - 转录结果
  */
-async function transcribeAudioLocal(audioPath, language = null, shouldSaveDirectly = false, tempDir = null, originalUrl = null) {
+async function transcribeAudioWithGemini(
+    audioPath,
+    language = null,
+    shouldSaveDirectly = false,
+    outputContext = null,
+    originalUrl = null,
+    podcastTitle = null,
+    transcriptionOptions = {}
+) {
+    let uploadedFile = null;
+
     try {
-        console.log(`🎤 本地转录: ${path.basename(audioPath)}`);
-        
-        // 构建Python命令
-        const scriptPath = path.join(__dirname, '..', 'whisper_transcribe.py');
-        const venvPython = path.join(__dirname, '..', '..', 'venv', 'bin', 'python');
-        let command = `"${venvPython}" "${scriptPath}" "${audioPath}" --model ${WHISPER_MODEL}`;
-        
-        if (language) {
-            command += ` --language ${language}`;
-        }
-        
-        // 如果需要直接保存转录文本
-        if (shouldSaveDirectly && tempDir) {
-            const timestamp = Date.now();
-            const filePrefix = `podcast_${timestamp}`;
-            command += ` --save-transcript "${tempDir}" --file-prefix "${filePrefix}"`;
-            console.log(`💾 将直接保存转录文本到: ${tempDir}`);
-        }
-        
-        // 添加source URL（如果提供）
-        if (originalUrl) {
-            command += ` --source-url "${originalUrl}"`;
-        }
-        
-        console.log(`⚙️ 执行命令: ${command}`);
-        
-        // 执行转录脚本
-        const { stdout, stderr } = await execAsync(command, {
-            cwd: path.join(__dirname, '..'),
-            maxBuffer: 1024 * 1024 * 20,
-            timeout: 1200000
+        console.log(`🎤 Gemini 转录: ${path.basename(audioPath)}`);
+
+        const mimeType = getAudioMimeType(audioPath);
+        uploadedFile = await getGeminiClient().files.upload({
+            file: audioPath,
+            config: { mimeType }
         });
-        
-        if (stderr && stderr.trim()) {
-            console.log(`🔧 Whisper日志: ${stderr.trim()}`);
+
+        const transcriptionPrompt = buildTranscriptionPrompt(language, transcriptionOptions);
+        let transcript = '';
+        const startedAt = Date.now();
+        let lastError = null;
+
+        for (let index = 0; index < GEMINI_TRANSCRIBE_MODEL_CHAIN.length; index++) {
+            const modelName = GEMINI_TRANSCRIBE_MODEL_CHAIN[index];
+
+            try {
+                if (index > 0) {
+                    console.log(`🔄 Gemini 转录降级到模型: ${modelName}`);
+                }
+
+                const response = await getGeminiClient().models.generateContent({
+                    model: modelName,
+                    contents: createUserContent([
+                        createPartFromUri(uploadedFile.uri, uploadedFile.mimeType || mimeType),
+                        transcriptionPrompt
+                    ])
+                });
+
+                transcript = (response.text || '').trim();
+                if (!transcript) {
+                    throw new Error('Gemini 返回了空转录结果');
+                }
+
+                break;
+            } catch (error) {
+                lastError = error;
+                if (!isTransientGeminiError(error) || index === GEMINI_TRANSCRIBE_MODEL_CHAIN.length - 1) {
+                    throw error;
+                }
+
+                const waitMs = 1500 * (index + 1);
+                console.warn(`⚠️ 模型 ${modelName} 暂时不可用，${waitMs}ms 后切到下一个模型`);
+                await new Promise((resolve) => setTimeout(resolve, waitMs));
+            }
         }
-        
-        // 解析JSON结果
-        const result = JSON.parse(stdout);
-        
-        if (!result.success) {
-            throw new Error(result.error || '本地转录失败');
+
+        if (!transcript) {
+            throw lastError || new Error('Gemini 返回了空转录结果');
         }
-        
-        const transcript = result.text || '';
-        console.log(`✅ 本地转录完成: ${transcript.length} 字符`);
-        console.log(`📊 处理时间: ${result.processing_time}秒, 检测语言: ${result.language} (${(result.language_probability * 100).toFixed(1)}%)`);
-        
-        // 如果保存了文件，返回完整结果对象；否则只返回转录文本
-        if (shouldSaveDirectly && result.savedFiles && result.savedFiles.length > 0) {
+
+        const processingTime = Math.round((Date.now() - startedAt) / 10) / 100;
+        const detectedLanguage = detectTranscriptLanguage(transcript, language);
+        const audioDuration = await probeAudioDuration(audioPath);
+        const savedFiles = [];
+
+        if (shouldSaveDirectly && outputContext) {
+            const transcriptFile = writeManagedTextFile(
+                formatTranscriptAsMarkdown(transcript, podcastTitle, originalUrl),
+                'transcript',
+                outputContext,
+                '.md'
+            );
+
+            if (transcriptFile) {
+                savedFiles.push(transcriptFile);
+            }
+        }
+
+        console.log(`✅ Gemini 转录完成: ${transcript.length} 字符`);
+        console.log(`📊 处理时间: ${processingTime}秒, 检测语言: ${detectedLanguage}`);
+
+        if (shouldSaveDirectly) {
             return {
                 text: transcript,
-                savedFiles: result.savedFiles,
-                language: result.language,
-                processing_time: result.processing_time,
-                audioDuration: result.duration, // 从Whisper获取的真实音频时长
-                whisperInfo: {
-                    duration: result.duration,
-                    language: result.language,
-                    language_probability: result.language_probability
-                }
+                savedFiles,
+                language: detectedLanguage,
+                processing_time: processingTime,
+                audioDuration
             };
         }
-        
+
         return transcript;
-        
     } catch (error) {
-        console.error(`❌ 本地转录失败:`, error);
-        
-        // 提供更详细的错误信息
-        if (error.message.includes('ENOENT')) {
-            throw new Error('Python3或Whisper脚本未找到，请检查安装');
-        } else if (error.message.includes('timeout')) {
-            throw new Error('本地转录超时，请检查音频文件大小');
-        } else if (error.message.includes('JSON')) {
-            throw new Error('本地转录输出格式错误，请检查脚本');
-        } else {
-            throw new Error(`本地转录失败: ${error.message}`);
+        console.error('❌ Gemini 转录失败:', error);
+        throw new Error(`Gemini 转录失败: ${error.message}`);
+    } finally {
+        if (uploadedFile?.name) {
+            try {
+                await getGeminiClient().files.delete({ name: uploadedFile.name });
+            } catch (cleanupError) {
+                console.warn(`⚠️ 清理 Gemini 上传文件失败: ${cleanupError.message}`);
+            }
         }
     }
 }
 
 /**
- * 转录单个音频文件（本地Faster-Whisper）
+ * 转录单个音频文件（Gemini 直连）
  * @param {string} audioPath - 音频文件路径
  * @param {string} autoDetect - 是否自动检测语言（转录始终保持原语言）
  * @returns {Promise<string>} - 转录文本
  */
 async function transcribeAudio(audioPath, autoDetect = true) {
-    return await transcribeAudioLocal(audioPath, autoDetect ? null : 'zh');
+    return await transcribeAudioWithGemini(audioPath, autoDetect ? null : 'zh');
 }
 
 
@@ -541,6 +1689,11 @@ async function transcribeAudio(audioPath, autoDetect = true) {
 async function formatTranscriptText(rawTranscript, transcriptLanguage = 'zh') {
     try {
         console.log(`📝 开始智能优化转录文本: ${rawTranscript.length} 字符 (修正错误 + 格式化)`);
+
+        if (shouldSkipLlmTranscriptOptimization(rawTranscript)) {
+            console.log('📄 跳过 LLM 优化：转录文本较短，使用基本格式化');
+            return applyBasicFormatting(rawTranscript);
+        }
 
         // 检查文本长度，超过限制时分块处理
         const maxCharsPerChunk = 4000; // 约2000-4000 tokens，适合GPT-3.5/GPT-4
@@ -571,6 +1724,11 @@ async function formatTranscriptText(rawTranscript, transcriptLanguage = 'zh') {
 
 **格式要求**：Markdown格式，段落间用双换行分隔，保持对话自然流畅性
 
+**说话人要求：**
+- 如果能从内容中明确判断轮次，请保留或补上通用说话人标签，如“主持人：”“嘉宾：”或“说话人 1：”“说话人 2：”
+- 不要虚构人名；只有原文里明确出现的人名才可以保留
+- 不要把两个说话人的内容合并进同一段
+
 **重要提醒**：不要添加额外的分隔线（如---）或多余的空行，段落间只需标准的双换行分隔
 
 **核心原则**：优化可读性的同时保持原意，长篇论述按话题转换合理分段
@@ -597,6 +1755,11 @@ ${rawTranscript}` :
 
 **Format Requirements**: Markdown format, double line breaks between paragraphs, maintain natural conversational flow
 
+**Speaker Requirements:**
+- If speaker turns are clear from the content, preserve or add generic speaker labels like "Host:", "Guest:", "Speaker 1:", or "Speaker 2:"
+- Do not invent speaker names; only keep names that are explicit in the transcript
+- Do not merge two speakers into the same paragraph
+
 **Important Reminder**: Do not add extra separators (like ---) or excessive blank lines, use only standard double line breaks between paragraphs
 
 **Core Principle**: Optimize readability while preserving original meaning, segment long monologues by topic transitions
@@ -604,8 +1767,8 @@ ${rawTranscript}` :
 Original transcript text:
 ${rawTranscript}`;
 
-        const response = await openai.chat.completions.create({
-            model: 'gpt-3.5-turbo',
+        const response = await getOpenAIClient().chat.completions.create({
+            model: AI_FAST_MODEL,
             messages: [
                 {
                     role: 'system',
@@ -621,6 +1784,11 @@ ${rawTranscript}`;
         });
 
         const optimizedText = response.choices[0].message.content.trim();
+
+        if (isSuspiciousOptimizationResult(rawTranscript, optimizedText)) {
+            console.warn('⚠️ 文本优化结果疑似偏航，回退到基本格式化');
+            return applyBasicFormatting(rawTranscript);
+        }
         
         // 调试: 检查优化后的分段情况
         console.log('🔍 OpenAI优化后文本前500字符:', JSON.stringify(optimizedText.substring(0, 500)));
@@ -683,8 +1851,8 @@ Requirements:
 
 Please output the optimized text directly in the original language without any explanations or annotations.`;
 
-        const response = await openai.chat.completions.create({
-            model: "gpt-4",
+        const response = await getOpenAIClient().chat.completions.create({
+            model: AI_SUMMARY_MODEL,
             messages: [
                 { role: "system", content: systemPrompt },
                 { role: "user", content: rawTranscript }
@@ -857,8 +2025,8 @@ Bitte erstellen Sie eine strukturierte Zusammenfassung des Podcast-Inhalts mit S
 async function generateDirectSummary(transcript, outputLanguage) {
     const systemPrompt = getSystemPromptByLanguage(outputLanguage);
 
-        const response = await openai.chat.completions.create({
-            model: "gpt-4",
+        const response = await getOpenAIClient().chat.completions.create({
+            model: AI_DEFAULT_MODEL,
             messages: [
                 { role: "system", content: systemPrompt },
                 { role: "user", content: transcript }
@@ -1029,8 +2197,8 @@ Dies ist ein Teil eines Podcasts, bitte erstellen Sie eine Zusammenfassung der S
 async function generateChunkSummary(chunkText, outputLanguage) {
     const systemPrompt = getChunkSummaryPrompt(outputLanguage);
 
-    const response = await openai.chat.completions.create({
-        model: "gpt-4",
+    const response = await getOpenAIClient().chat.completions.create({
+        model: AI_SUMMARY_MODEL,
         messages: [
             { role: "system", content: systemPrompt },
             { role: "user", content: chunkText }
@@ -1121,8 +2289,8 @@ Bitte organisieren Sie als strukturierte Podcast-Zusammenfassung:`
 async function generateFinalSummary(combinedSummary, outputLanguage) {
     const systemPrompt = getFinalSummaryPrompt(outputLanguage);
 
-    const response = await openai.chat.completions.create({
-                model: "gpt-4",
+    const response = await getOpenAIClient().chat.completions.create({
+                model: AI_SUMMARY_MODEL,
                 messages: [
             { role: "system", content: systemPrompt },
                     { role: "user", content: combinedSummary }
@@ -1198,8 +2366,8 @@ ${chunkText}` :
 Original transcript text:
 ${chunkText}`;
 
-        const response = await openai.chat.completions.create({
-            model: 'gpt-3.5-turbo',
+        const response = await getOpenAIClient().chat.completions.create({
+            model: AI_FAST_MODEL,
             messages: [
                 {
                     role: 'system',
@@ -1603,6 +2771,153 @@ async function formatLongTranscriptInChunks(rawTranscript, transcriptLanguage, m
     }
 }
 
+function buildSpeakerRefinementChunks(transcript, maxCharsPerChunk = 2800) {
+    const cleanedTranscript = stripTranscriptPresentationArtifacts(transcript);
+    if (!cleanedTranscript) {
+        return [];
+    }
+
+    const blocks = splitTranscriptIntoTurnBlocks(cleanedTranscript);
+    if (blocks.length === 0) {
+        return [cleanedTranscript];
+    }
+
+    const chunks = [];
+    let currentChunk = '';
+
+    for (const block of blocks) {
+        const trimmedBlock = block.trim();
+        if (!trimmedBlock) {
+            continue;
+        }
+
+        const candidateChunk = currentChunk ? `${currentChunk}\n\n${trimmedBlock}` : trimmedBlock;
+        if (candidateChunk.length > maxCharsPerChunk && currentChunk) {
+            chunks.push(currentChunk);
+            currentChunk = trimmedBlock;
+        } else {
+            currentChunk = candidateChunk;
+        }
+    }
+
+    if (currentChunk) {
+        chunks.push(currentChunk);
+    }
+
+    return chunks;
+}
+
+function extractSpeakerRefinementContext(transcript, maxTurns = 4) {
+    const blocks = splitTranscriptIntoTurnBlocks(stripTranscriptPresentationArtifacts(transcript));
+    return blocks.slice(-maxTurns).join('\n');
+}
+
+async function refineSpeakerTurnsSingleChunk(chunkText, transcriptLanguage = 'zh', previousContext = '') {
+    const labelGuide = transcriptLanguage === 'zh'
+        ? '主持人：、嘉宾：、说话人 1：、说话人 2：'
+        : 'Host:, Guest:, Speaker 1:, Speaker 2:';
+    const continuityPrompt = previousContext
+        ? transcriptLanguage === 'zh'
+            ? `前文最近几轮如下，仅用于保持标签一致性，不要复述这些内容：\n${previousContext}\n\n`
+            : `Recent labeled turns for continuity only. Do not repeat them in the output:\n${previousContext}\n\n`
+        : '';
+    const prompt = transcriptLanguage === 'zh'
+        ? `${continuityPrompt}请只做“说话人轮次细分”这一个任务，处理下面这段播客转录。
+
+严格要求：
+1. 保持原文语言和原有措辞，不能改写、润色、纠错、补句、总结或删减。
+2. 你只允许做两件事：
+   - 在说话人切换处重新分段
+   - 在段首补上或修正通用说话人标签
+3. 标签只能用：${labelGuide}
+4. 如果无法判断，就不要强行标注，直接保留无标签段落。
+5. 不要虚构人名，不要添加时间戳，不要输出解释。
+
+请直接输出处理后的正文：
+${chunkText}`
+        : `${continuityPrompt}Your only task is to re-segment the following podcast transcript by speaker turns.
+
+Strict requirements:
+1. Preserve the original wording and language exactly. Do not rewrite, polish, correct, summarize, or remove content.
+2. You may only do two things:
+   - split paragraphs at speaker boundaries
+   - add or correct generic speaker labels at the start of a paragraph
+3. Use labels only from: ${labelGuide}
+4. If you are not confident, leave the paragraph unlabeled instead of guessing.
+5. Do not invent names, do not add timestamps, do not add explanations.
+
+Return only the processed transcript:
+${chunkText}`;
+
+    const response = await getOpenAIClient().chat.completions.create({
+        model: AI_SPEAKER_MODEL,
+        messages: [
+            {
+                role: 'system',
+                content: transcriptLanguage === 'zh'
+                    ? '你是一个严格的播客转录说话人细分助手，只能调整说话人边界和通用标签，不能改写正文。'
+                    : 'You are a strict podcast speaker-turn segmentation assistant. You may only adjust speaker boundaries and generic labels, never rewrite the transcript.'
+            },
+            {
+                role: 'user',
+                content: prompt
+            }
+        ],
+        temperature: 0.1,
+        max_tokens: Math.min(4096, Math.max(800, Math.floor(chunkText.length * 1.35)))
+    });
+
+    return ensureMarkdownParagraphs(response.choices[0].message.content.trim());
+}
+
+async function refineTranscriptSpeakerTurns(transcript, transcriptLanguage = 'zh') {
+    try {
+        const cleanedTranscript = stripTranscriptPresentationArtifacts(transcript);
+        if (!cleanedTranscript || cleanedTranscript.length < 120) {
+            return transcript;
+        }
+
+        const chunks = buildSpeakerRefinementChunks(cleanedTranscript);
+        if (chunks.length === 0) {
+            return transcript;
+        }
+
+        console.log(`🎙️ 开始细化说话人轮次: ${chunks.length} 块`);
+        const refinedChunks = [];
+        let previousContext = '';
+
+        for (let index = 0; index < chunks.length; index += 1) {
+            const chunk = chunks[index];
+            try {
+                const refinedChunk = await refineSpeakerTurnsSingleChunk(chunk, transcriptLanguage, previousContext);
+                const acceptedChunk = isSpeakerRefinementSafe(chunk, refinedChunk) ? refinedChunk : chunk;
+
+                if (acceptedChunk === chunk) {
+                    console.warn(`⚠️ 第 ${index + 1} 块说话人细分结果偏离原文，已回退原文本块`);
+                }
+
+                refinedChunks.push(acceptedChunk);
+                previousContext = extractSpeakerRefinementContext(acceptedChunk);
+            } catch (error) {
+                console.error(`❌ 第 ${index + 1} 块说话人细分失败: ${error.message}`);
+                refinedChunks.push(chunk);
+                previousContext = extractSpeakerRefinementContext(chunk);
+            }
+
+            if (index < chunks.length - 1) {
+                await new Promise((resolve) => setTimeout(resolve, 400));
+            }
+        }
+
+        const combinedTranscript = ensureMarkdownParagraphs(refinedChunks.join('\n\n'));
+        console.log(`✅ 说话人轮次细化完成`);
+        return combinedTranscript || transcript;
+    } catch (error) {
+        console.error('❌ 说话人轮次细化失败:', error.message);
+        return transcript;
+    }
+}
+
 /**
  * 翻译转录内容
  * @param {string} transcript - 原始转录内容
@@ -1661,8 +2976,8 @@ async function translateDirect(transcript, sourceName, targetName) {
 原文内容：
 ${transcript}`;
 
-    const response = await openai.chat.completions.create({
-        model: "gpt-4o",
+    const response = await getOpenAIClient().chat.completions.create({
+        model: AI_DEFAULT_MODEL,
         messages: [
             {
                 role: "user",
@@ -1749,15 +3064,31 @@ function needsTranslation(detectedLanguage, targetLanguage) {
 }
 
 module.exports = {
+    SUPPORTED_ASR_BACKENDS,
+    normalizeAsrBackend,
     processAudioWithOpenAI,
     transcribeAudio,
-    transcribeAudioLocal,
+    transcribeAudioWithGemini,
+    transcribeAudioWithWhisperLocal,
+    transcribeAudioWithWhisperXLocal,
+    transcribeAudioWithQwen3Asr,
+    transcribeAudioWithFunAsrRealtime,
+    transcribeAudioWithFunAsrFileDiarization,
+    transcribeAudioWithConfiguredBackend,
     transcribeMultipleAudios,
+    buildStructuredTranscript,
+    buildStructuredTranscriptFromSegments,
+    renderStructuredTranscript,
+    hasNativeStructuredTranscript,
+    formatTranscriptAsMarkdown,
+    normalizeTranscriptSpeakerLabels,
     formatTranscriptText,
+    refineTranscriptSpeakerTurns,
     formatSummaryAsMarkdown,
     formatTranslationAsMarkdown,
     optimizeTranscriptContinuity,
     generateSummary,
     translateTranscript,
-    needsTranslation
+    needsTranslation,
+    detectTranscriptLanguage
 };

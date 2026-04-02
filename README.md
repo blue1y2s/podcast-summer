@@ -14,13 +14,21 @@ An open-source tool that turns podcasts into high-quality transcripts and AI-pow
 
 Podcast Transcriber is a full-stack web application designed to bridge the gap between audio content and text accessibility. It automatically processes podcast episodes from various platforms, and delivers accurate transcriptions with meaningful summaries in multiple languages.
 
+## 📌 Project Status
+
+- The web app is the primary and actively maintained interface for this project.
+- The Electron desktop app is kept in the repository for reference, but it is not actively maintained for now.
+- If there is clear demand later, the desktop GUI can be revisited. For local automation, a CLI or skill-based interface is the more likely next step.
+
 ### Key Capabilities
 
 - **🔗 Multi-Platform Support**: Support for Apple Podcasts, Xiaoyuzhoufm, RSS feeds, and direct audio URLs
-- **🚀 Performance First**: Using OpenAI Faster-Whisper model for speech-to-text
+- **🎛️ Multi-Backend ASR**: Switch between `auto`, `fun_asr_file_diarization`, `qwen3_asr`, `gemini_audio`, `fun_asr_realtime`, `whisperx_local`, and `whisper_local`
+- **🚀 Performance First**: Use cloud ASR for quality, WhisperX + pyannote for true diarization, or local Whisper for offline fallback
 - **🤖 AI Optimization**: AI-optimized transcription and summary text based on podcast content characteristics
 - **📱 Responsive Design**: Modern mobile-first UI, friendly experience for both desktop and mobile
 - **🌍 Conditional Translation**: When the selected summary language differs from the detected transcript language, the system auto-translates with GPT‑4o
+- **🧠 Hotwords & Context**: Pass proper nouns and disambiguation context from UI or API to improve mixed-language recognition
 
 ## 🏗️ Architecture & Implementation
 
@@ -51,7 +59,7 @@ Podcast Transcriber is a full-stack web application designed to bridge the gap b
 
 1. **Podcast Link Analysis**: Multi-strategy URL parsing for Apple Podcasts, Xiaoyuzhou, and RSS feeds
 2. **Audio Extraction**: Direct download with RSS feed discovery and API integration  
-3. **Local Transcription**: High-speed Faster-Whisper processing
+3. **ASR Selection**: Route audio to Qwen3-ASR, Gemini Audio, or local Faster-Whisper
 4. **Text Optimization**: AI-powered continuity enhancement and flow improvement
 5. **Summarization**: Structured content analysis and key point extraction
 6. **File Export**: Automatic saving of transcripts and summaries with download links
@@ -71,8 +79,11 @@ Podcast Transcriber is a full-stack web application designed to bridge the gap b
 - **File Management**: Audio download, processing, and result saving
 
 #### AI & ML Integration
-- **Faster-Whisper**: Local high-performance speech-to-text transcription
-- **GPT-4**: Advanced language model for podcast content summarization and text optimization
+- **Qwen3-ASR Toolkit**: DashScope-backed long-audio transcription with built-in VAD chunking
+- **Gemini Audio**: Direct audio understanding for cloud transcription
+- **WhisperX + pyannote**: Local transcription with audio-level speaker diarization
+- **Faster-Whisper**: Local high-performance offline fallback transcription
+- **Gemini / OpenAI-compatible chat models**: Text optimization, speaker-turn refinement, summarization, and translation
 - **Custom Prompting**: Specialized prompts optimized for podcasts, enhancing continuity and quality
 
 ## 📁 Project Structure
@@ -112,16 +123,19 @@ podcast-to-text/
 ### Prerequisites
 
 - **Node.js 16+**: Runtime environment
-- **Python 3.8+**: For local Faster-Whisper transcription (virtual environment required)
+- **Python 3.8+**: For local Faster-Whisper transcription (virtual environment recommended)
 - **ffmpeg**: Audio processing library (usually pre-installed or available via package managers)
-- **OpenAI API Key**: For transcription text optimization and AI summarization
+- **At least one ASR backend**:
+  - **DashScope API Key** for `qwen3_asr`, `fun_asr_realtime`, or `fun_asr_file_diarization`
+  - **Gemini API Key** for `gemini_audio`
+  - **Hugging Face / pyannote token** for `whisperx_local`
+  - **Local Python + faster-whisper** for `whisper_local`
 
 ### Installation
 
 ```bash
 # Clone the repository
-git clone <https://github.com/wendy7756/
-podcast-transcriber>
+git clone https://github.com/blue1y2s/podcast-summer.git
 cd podcast-transcriber
 
 # Install Node.js dependencies
@@ -132,13 +146,15 @@ python3 -m venv venv
 source venv/bin/activate  # Linux/macOS
 # or venv\Scripts\activate  # Windows
 
-# Install Python dependencies (local transcription)
+# Install Python dependencies (local whisper, WhisperX diarization, optional Qwen)
 pip install --upgrade pip
 pip install faster-whisper
+pip install whisperx pyannote.audio
+pip install qwen3-asr-toolkit
 
 # Configure environment
 cp .env.example .env
-# Edit .env file, add your OpenAI API key
+# Edit .env and configure at least one ASR backend
 
 # Start the application
 npm start
@@ -164,13 +180,29 @@ If you encounter errors like `/bin/sh: .../venv/bin/python: No such file or dire
 Create a `.env` file with the following variables:
 
 ```env
-# OpenAI Configuration (for text optimization and summarization only)
-OPENAI_API_KEY=your_openai_api_key_here
-# Optional: custom OpenAI URL (compatible endpoint)
+# Gemini / OpenAI-compatible configuration
+GEMINI_API_KEY=your_gemini_api_key_here
+GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
 
-# Local Whisper Configuration
-USE_LOCAL_WHISPER=true
-WHISPER_MODEL=base
+# DashScope ASR
+DASHSCOPE_API_KEY=your_dashscope_api_key_here
+DASHSCOPE_API_ROOT=https://dashscope.aliyuncs.com
+QWEN3_ASR_MODEL=qwen3-asr-flash
+FUN_ASR_REALTIME_MODEL=fun-asr-realtime-2026-02-28
+FUN_ASR_FILE_MODEL=fun-asr
+
+# Local Whisper configuration
+WHISPER_MODEL=medium
+WHISPER_DEVICE=cpu
+WHISPER_COMPUTE_TYPE=int8
+
+# WhisperX + pyannote configuration
+WHISPERX_MODEL=./models/faster-whisper-large-v3
+WHISPERX_MODEL_DIR=./models
+PYANNOTE_TOKEN=your_huggingface_or_pyannote_token_here
+PYANNOTE_DIARIZATION_MODEL=pyannote/speaker-diarization-community-1
+# Optional
+# WHISPER_PYTHON_BIN=./venv/bin/python
 
 # Server Configuration
 PORT=3000
@@ -179,6 +211,15 @@ PORT=3000
 MAX_SEGMENT_SIZE_MB=25
 SEGMENT_DURATION_SECONDS=600
 ```
+
+Notes:
+
+- `auto` backend selection tries `fun_asr_file_diarization -> qwen3_asr -> gemini_audio -> fun_asr_realtime -> whisperx_local -> whisper_local`
+- Explicit backend selection never silently switches providers
+- `hotwords` and `transcriptionContext` can be set from the UI or passed directly to the API payload
+- For GPU setups, `WHISPER_MODEL=large-v3` is recommended
+- `whisperx_local` requires a Hugging Face / pyannote token and downloads alignment / diarization models on first use
+- `fun_asr_file_diarization` requires a publicly accessible direct audio URL; it does not work for local uploads
 
 ## 🔧 Troubleshooting
 
@@ -297,7 +338,10 @@ A: This is normal behavior. Faster-Whisper needs to download model files (~75MB)
 
 Apache 2.0 License - see [LICENSE](LICENSE) file for details.
 
+## 🙏 Acknowledgements
+
+This project builds on the open-source work of the original repository by [wendy7756/podcast-transcriber](https://github.com/wendy7756/podcast-transcriber). Thanks to the original author for publishing the initial version and making this derivative work possible.
+
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit issues, feature requests, or pull requests.
-

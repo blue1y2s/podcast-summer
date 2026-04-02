@@ -19,7 +19,8 @@ OUTPUT_FILE="server/temp/podcast_${TIMESTAMP}_transcript.txt"
 echo "📝 开始转录..."
 
 # 直接运行Python脚本并提取文本
-python3 server/whisper_transcribe.py "$AUDIO_FILE" --model base | jq -r '.text' > "$OUTPUT_FILE"
+WHISPER_MODEL="${WHISPER_MODEL:-medium}"
+python3 server/whisper_transcribe.py "$AUDIO_FILE" --model "$WHISPER_MODEL" | jq -r '.text' > "$OUTPUT_FILE"
 
 if [ $? -eq 0 ] && [ -s "$OUTPUT_FILE" ]; then
     echo "✅ 转录完成！"

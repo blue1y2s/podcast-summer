@@ -2,9 +2,18 @@
 const translations = {
     zh: {
         title: "Podcast提取器",
-        subtitle: "只需提供Podcast音频链接，即可获得高质量的文字转录和AI智能总结",
+        subtitle: "输入链接或音频文件，直接查看转录结果。",
+        sourceLabel: "内容来源",
+        sourceUrlTitle: "播客链接",
+        sourceUrlDesc: "适合 Apple Podcasts、小宇宙、RSS 和直接音频链接",
+        sourceFileTitle: "本地音频",
+        sourceFileDesc: "把录音或导出的播客文件直接拖进来处理",
         urlLabel: "Podcast音频链接",
         urlHelper: "支持 Apple Podcasts、小宇宙、RSS订阅源和直接音频链接",
+        pickAudioText: "选择音频文件",
+        fileHelper: "支持 mp3、m4a、wav、aac、ogg、flac、mp4、webm",
+        selectedFileLabel: "已选文件",
+        clearFileText: "清除",
         operationLabel: "操作类型",
         option1Title: "转录并总结",
         option1Desc: "获得转录文本和AI总结",
@@ -22,11 +31,30 @@ const translations = {
         translationTitle: "翻译",
         loadingText: "正在处理您的播客...",
         errorText: "处理过程中出现错误",
+        emptyStateTitle: "结果会直接出现在这里",
+        emptyStateBody: "处理完成后直接显示转录稿。",
+        emptyStateBullet1: "默认先看转录稿。",
+        emptyStateBullet2: "总结和翻译按需切换。",
+        emptyStateBullet3: "需要时再打开保存位置。",
+        copyActiveText: "复制当前内容",
+        revealFileText: "打开保存位置",
+        desktopModeApp: "桌面 App",
+        desktopModeWeb: "浏览器模式",
+        desktopStatusApp: "结果固定显示在工作区",
+        desktopStatusWeb: "浏览器也支持本地音频",
+        localFileReady: "已准备好本地音频文件",
+        remoteSourceLabel: "来源：播客链接",
+        localSourceLabel: "来源：本地音频",
+        languageLabel: "识别语言",
+        durationLabel: "音频时长",
+        fileCountLabel: "输出文件",
+        copySuccess: "已复制当前内容",
         estimatedTime: "预计需要 3-8 分钟...",
-        processingTips: "处理中，请耐心等待：",
-        tipKeepOpen: "页面请保持打开状态",
-        tipLargeFile: "大文件需要更长时间处理",
-        tipAutoShow: "处理完成后会自动显示结果",
+        processingTips: "处理中：",
+        tipKeepOpen: "保持窗口开启",
+        tipLargeFile: "大文件更慢",
+        tipAutoShow: "完成后自动显示结果",
+        stepUpload: "导入音频...",
         stepDownload: "下载音频文件",
         stepTranscribe: "AI语音转录中...",
         stepSummarize: "生成智能总结",
@@ -39,9 +67,18 @@ const translations = {
     },
     en: {
         title: "Podcast Transcriber",
-        subtitle: "Just provide a podcast audio link to get high-quality transcription and AI-powered summary",
+        subtitle: "Paste a link or drop an audio file, then read the transcript here.",
+        sourceLabel: "Source",
+        sourceUrlTitle: "Podcast link",
+        sourceUrlDesc: "Best for Apple Podcasts, RSS, Xiaoyuzhou, and direct audio URLs",
+        sourceFileTitle: "Local audio",
+        sourceFileDesc: "Drop a recording or exported episode file directly into the app",
         urlLabel: "Podcast Audio Link",
         urlHelper: "Supports Apple Podcasts, RSS feeds, Xiaoyuzhou, and direct audio links",
+        pickAudioText: "Choose audio file",
+        fileHelper: "Supports mp3, m4a, wav, aac, ogg, flac, mp4, and webm",
+        selectedFileLabel: "Selected file",
+        clearFileText: "Clear",
         operationLabel: "Operation Type",
         option1Title: "Transcribe & Summarize",
         option1Desc: "Get transcription and AI summary",
@@ -59,11 +96,30 @@ const translations = {
         translationTitle: "Translation",
         loadingText: "Processing your podcast...",
         errorText: "An error occurred during processing",
+        emptyStateTitle: "Results land here immediately",
+        emptyStateBody: "The transcript appears here as soon as processing finishes.",
+        emptyStateBullet1: "Transcript first.",
+        emptyStateBullet2: "Summary and translation only when needed.",
+        emptyStateBullet3: "Reveal the saved file if you need it.",
+        copyActiveText: "Copy current view",
+        revealFileText: "Reveal saved file",
+        desktopModeApp: "Desktop App",
+        desktopModeWeb: "Browser Mode",
+        desktopStatusApp: "Results stay in the workspace",
+        desktopStatusWeb: "Browser mode also supports local audio",
+        localFileReady: "Local audio file is ready",
+        remoteSourceLabel: "Source: Podcast link",
+        localSourceLabel: "Source: Local audio",
+        languageLabel: "Detected language",
+        durationLabel: "Audio duration",
+        fileCountLabel: "Files",
+        copySuccess: "Copied the current view",
         estimatedTime: "Estimated 3-8 minutes...",
-        processingTips: "Processing, please wait patiently:",
-        tipKeepOpen: "Keep this page open",
-        tipLargeFile: "Large files require more processing time",
-        tipAutoShow: "Results will display automatically when complete",
+        processingTips: "Processing:",
+        tipKeepOpen: "Keep the window open",
+        tipLargeFile: "Large files take longer",
+        tipAutoShow: "Results appear automatically",
+        stepUpload: "Importing audio...",
         stepDownload: "Download audio file",
         stepTranscribe: "AI transcription in progress...",
         stepSummarize: "Generate smart summary",
@@ -98,6 +154,69 @@ function detectBrowserLanguage() {
 
 // 当前语言状态 - 根据浏览器语言自动检测
 let currentLang = detectBrowserLanguage();
+let selectedSourceMode = 'url';
+let selectedAudioFile = null;
+let lastResultData = null;
+let activeTabId = null;
+let desktopState = {
+    isDesktop: false,
+    tempDir: null
+};
+
+function generateSessionId() {
+    return `session_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+}
+
+function getDesktopBridge() {
+    return window.desktopApp || null;
+}
+
+async function initializeDesktopMode() {
+    const bridge = getDesktopBridge();
+
+    if (!bridge) {
+        updateDesktopChrome();
+        return;
+    }
+
+    try {
+        desktopState = await bridge.getState();
+    } catch (error) {
+        console.warn('Desktop bridge unavailable, falling back to browser mode.', error);
+        desktopState = { isDesktop: true, tempDir: null };
+    }
+
+    updateDesktopChrome();
+    updateActionButtons();
+}
+
+function formatDurationLabel(seconds) {
+    if (!seconds || Number.isNaN(seconds)) {
+        return null;
+    }
+
+    const totalSeconds = Math.round(Number(seconds));
+    const minutes = Math.floor(totalSeconds / 60);
+    const remainingSeconds = totalSeconds % 60;
+
+    if (minutes === 0) {
+        return `${remainingSeconds}s`;
+    }
+
+    if (remainingSeconds === 0) {
+        return `${minutes}m`;
+    }
+
+    return `${minutes}m ${remainingSeconds}s`;
+}
+
+function estimateDurationFromFileSize(bytes) {
+    if (!bytes) {
+        return null;
+    }
+
+    return Math.max(120, Math.round(bytes / 16384));
+}
 
 // 语言切换功能
 function toggleLanguage() {
@@ -134,9 +253,15 @@ function updateUI() {
     urlInput.placeholder = currentLang === 'zh' 
         ? 'https://example.com/podcast/episode'
         : 'https://example.com/podcast/example';
+
+    const pickAudioButton = document.getElementById('pickAudioButton');
+    if (pickAudioButton) {
+        pickAudioButton.textContent = texts.pickAudioText;
+    }
     
     // 更新进度页面的文本元素
     const progressElements = {
+        'stepUploadText': 'stepUpload',
         'stepDownloadText': 'stepDownload',
         'stepTranscribeText': 'stepTranscribe', 
         'stepSummarizeText': 'stepSummarize',
@@ -162,173 +287,206 @@ function updateUI() {
         // 获取当前的savedFiles数据并重新生成下载按钮
         updateDownloadButtonsLanguage();
     }
-    
 
+    updateDesktopChrome();
+    updateSelectedFileCard();
+    updateResultMeta(lastResultData);
+    updateActionButtons();
+
+    if (lastResultData && !document.getElementById('resultsContent').classList.contains('hidden')) {
+        const previousTab = activeTabId;
+        showResultsContent(lastResultData);
+        if (previousTab) {
+            activateTab(previousTab);
+        }
+    }
+}
+
+function createProgressConnection(sessionId) {
+    try {
+        const eventSource = new EventSource(`/api/progress/${sessionId}`);
+        setupProgressListener(eventSource);
+        return eventSource;
+    } catch (error) {
+        console.warn('SSE连接失败，使用模拟进度:', error);
+        return null;
+    }
+}
+
+function closeProgressConnection(eventSource, reason = 'normal') {
+    if (!eventSource) {
+        return;
+    }
+
+    eventSource.close();
+    console.log(`🔌 SSE连接已关闭（${reason}）`);
+}
+
+async function uploadLocalAudioFile(audioFile, sessionId) {
+    const uploadData = new FormData();
+    uploadData.append('audioFile', audioFile);
+    uploadData.append('sessionId', sessionId);
+
+    const response = await fetch('/api/upload-audio', {
+        method: 'POST',
+        body: uploadData
+    });
+
+    if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const result = await response.json();
+    if (!result.success) {
+        throw new Error(result.error || '上传音频失败');
+    }
+
+    return result.data;
+}
+
+async function processRemoteAudio(data) {
+    const controller = new AbortController();
+    let estimatedDuration = null;
+
+    if (!smartProgressBar) initializeProgressBar();
+    smartProgressBar.currentStage = 'parsing';
+    smartProgressBar.updateProgress(7, 'Analyzing audio...', false);
+
+    try {
+        const estimateController = new AbortController();
+        const estimateTimeoutId = setTimeout(() => estimateController.abort(), 30000);
+        const estimateResponse = await fetch('/api/estimate-duration', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ url: data.url }),
+            signal: estimateController.signal
+        });
+
+        clearTimeout(estimateTimeoutId);
+
+        if (estimateResponse.ok) {
+            const estimateResult = await estimateResponse.json();
+            if (estimateResult.success) {
+                estimatedDuration = estimateResult.estimatedDuration;
+            }
+        }
+    } catch (estimateError) {
+        console.warn('⚠️ 音频时长预估失败，使用默认估算:', estimateError.message);
+    }
+
+    startProgressSimulation(estimatedDuration);
+
+    const response = await fetch('/api/process-podcast', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(data),
+        signal: controller.signal
+    });
+
+    if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    return response.json();
+}
+
+async function processLocalAudio(data) {
+    if (!selectedAudioFile) {
+        throw new Error(currentLang === 'zh' ? '请先选择音频文件' : 'Please select an audio file first');
+    }
+
+    const estimatedDuration = estimateDurationFromFileSize(selectedAudioFile.size);
+    startProgressSimulation(estimatedDuration);
+    smartProgressBar.currentStage = 'uploading';
+    smartProgressBar.currentProgress = 6;
+    smartProgressBar.updateProgressDisplay(6);
+
+    const uploadResult = await uploadLocalAudioFile(selectedAudioFile, data.sessionId);
+
+    const response = await fetch('/api/process-local-file', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            ...data,
+            filename: uploadResult.filename,
+            originalName: uploadResult.originalName || selectedAudioFile.name
+        })
+    });
+
+    if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    return response.json();
 }
 
 // 表单提交处理
 async function processPodcast(event) {
     event.preventDefault();
-    
+
     const form = event.target;
     const formData = new FormData(form);
-    
-    // 生成唯一的会话ID
-    const sessionId = 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-    
+    const sessionId = generateSessionId();
     const data = {
-        url: formData.get('podcastUrl') || document.getElementById('podcastUrl').value,
         operation: formData.get('operation'),
         audioLanguage: document.getElementById('audioLanguage').value,
         outputLanguage: document.getElementById('outputLanguage').value,
-        sessionId: sessionId
+        sessionId
     };
-    
-    console.log('Processing podcast with data:', data);
-    
-    // 显示结果区域和加载状态
+
+    if (selectedSourceMode === 'url') {
+        data.url = document.getElementById('podcastUrl').value;
+    }
+
+    console.log('Processing podcast with data:', {
+        ...data,
+        sourceMode: selectedSourceMode,
+        fileName: selectedAudioFile?.name || null
+    });
+
     showResults();
     showLoadingWithProgress();
-    
-    // 建立SSE连接接收进度更新
-    let eventSource = null;
+    let eventSource = createProgressConnection(sessionId);
+
     try {
-        eventSource = new EventSource(`/api/progress/${sessionId}`);
-        setupProgressListener(eventSource);
-    } catch (sseError) {
-        console.warn('SSE连接失败，使用模拟进度:', sseError);
-    }
-    
-    try {
-        // 调用后端API，设置15分钟超时
-        const controller = new AbortController();
-        // 移除超时限制以支持长音频处理
-        
-        // 步骤1: 先获取音频时长估算，带进度反馈
-        let estimatedDuration = null;
-        
-        // 显示预估阶段的进度（使用新的智能进度条）
-        
-        // 预估开始：使用智能进度条
-        if (!smartProgressBar) initializeProgressBar();
-        smartProgressBar.updateProgress(7, 'Analyzing audio...', false);
-        
-        try {
-            console.log('🔍 正在预估音频时长...');
-            // 为预估接口使用独立的超时控制（30秒）
-            const estimateController = new AbortController();
-            const estimateTimeoutId = setTimeout(() => estimateController.abort(), 30000);
-            
-            // 预估中：使用智能进度条
-            if (smartProgressBar) {
-                smartProgressBar.updateProgress(8, 'Estimating duration...', false);
-            }
-            
-            const estimateResponse = await fetch('/api/estimate-duration', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ url: data.url }),
-                signal: estimateController.signal
-            });
-            
-            clearTimeout(estimateTimeoutId);
-            
-            if (estimateResponse.ok) {
-                const estimateResult = await estimateResponse.json();
-                if (estimateResult.success) {
-                    estimatedDuration = estimateResult.estimatedDuration;
-                    console.log(`📊 获取到音频时长估算: ${Math.round(estimatedDuration / 60)} 分钟`);
-                    
-                    // 预估完成：使用智能进度条
-                    if (smartProgressBar) {
-                        smartProgressBar.updateProgress(9, 'Duration estimated', false);
-                    }
-                }
-            }
-        } catch (estimateError) {
-            console.warn('⚠️ 音频时长预估失败，使用默认估算:', estimateError.message);
-            // 预估失败：使用智能进度条
-            if (smartProgressBar) {
-                smartProgressBar.updateProgress(8, 'Using default estimation', false);
-            }
-        }
-        
-        // 步骤2: 启动进度模拟（使用真实音频时长）
-        startProgressSimulation(estimatedDuration);
-        
-        const response = await fetch('/api/process-podcast', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(data),
-            signal: controller.signal
-        });
-        
-        // 已移除超时限制
-        
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        
-        const result = await response.json();
-        
-        // 停止进度模拟
+        const result = selectedSourceMode === 'file'
+            ? await processLocalAudio(data)
+            : await processRemoteAudio(data);
+
         stopProgressSimulation();
-        
+
         if (result.success) {
-            // 处理时长信息（支持估算时长和真实时长）
-            const processingMinutes = smartProgressBar ? 
-                (Date.now() - smartProgressBar.smartProgress.startTime) / 1000 / 60 : 0;
-            
+            const processingMinutes = smartProgressBar && smartProgressBar.smartProgress.startTime
+                ? (Date.now() - smartProgressBar.smartProgress.startTime) / 1000 / 60
+                : 0;
+
             if (result.data.actualDuration) {
-                // 有真实时长，更新学习数据
                 const audioMinutes = result.data.actualDuration / 60;
-                const actualRatio = processingMinutes / audioMinutes;
-                
-                console.log(`✅ 真实音频时长: ${audioMinutes.toFixed(1)} 分钟`);
-                console.log(`⏱️ 实际处理时间: ${processingMinutes.toFixed(1)} 分钟`);
-                console.log(`📊 实际处理比率: ${actualRatio.toFixed(2)}x`);
-                
-                // 保存处理比率，用于改进未来预估
-                localStorage.setItem('audioProcessingRatio', actualRatio.toString());
-                
-                // 显示时长对比信息
-                if (result.data.estimatedDuration) {
-                    const estimatedMinutes = result.data.estimatedDuration / 60;
-                    console.log(`📏 初始估算: ${estimatedMinutes.toFixed(1)} 分钟 | 真实时长: ${audioMinutes.toFixed(1)} 分钟`);
+                const actualRatio = audioMinutes > 0 ? processingMinutes / audioMinutes : 0;
+
+                if (actualRatio > 0) {
+                    localStorage.setItem('audioProcessingRatio', actualRatio.toString());
                 }
-            } else if (result.data.estimatedDuration) {
-                // 只有估算时长
-                const estimatedMinutes = result.data.estimatedDuration / 60;
-                console.log(`📊 基于文件大小估算: ${estimatedMinutes.toFixed(1)} 分钟`);
             }
-            
+
             showResultsContent(result.data, data.operation);
         } else {
             showError(result.error || 'Unknown error occurred');
         }
-        
-        // 关闭SSE连接
-        if (eventSource) {
-            eventSource.close();
-            console.log('🔌 SSE连接已关闭');
-        }
-        
+
+        closeProgressConnection(eventSource, 'completed');
     } catch (error) {
         console.error('Error processing podcast:', error);
         stopProgressSimulation();
-        
-        // 关闭SSE连接
-        if (eventSource) {
-            eventSource.close();
-            console.log('🔌 SSE连接已关闭（错误）');
-        }
-        
+        closeProgressConnection(eventSource, 'error');
+
         if (error.name === 'AbortError') {
-            // 超时后检查是否有文件已生成
             console.log('🔄 检测到超时，正在检查处理结果...');
             await checkForCompletedFiles();
         } else {
@@ -428,7 +586,10 @@ async function fetchFileContent(filename) {
 function showResults() {
     const resultsSection = document.getElementById('resultsSection');
     resultsSection.classList.remove('hidden');
-    resultsSection.scrollIntoView({ behavior: 'smooth' });
+
+    if (window.innerWidth < 1080) {
+        resultsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
 }
 
 // 显示加载状态
@@ -436,6 +597,8 @@ function showLoading() {
     document.getElementById('loadingState').classList.remove('hidden');
     document.getElementById('resultsContent').classList.add('hidden');
     document.getElementById('errorState').classList.add('hidden');
+    document.getElementById('emptyState').classList.add('hidden');
+    document.getElementById('resultMetaBar').classList.add('hidden');
     
     // 禁用提交按钮
     const submitBtn = document.getElementById('submitBtn');
@@ -484,6 +647,7 @@ class SmartProgressBar {
         // 阶段配置
         this.stageConfig = {
             'preparing': { speed: 0.5, maxProgress: 5, message: 'Preparing...' },
+            'uploading': { speed: 0.6, maxProgress: 14, message: 'Importing audio...' },
             'parsing': { speed: 0.8, maxProgress: 15, message: 'Parsing audio information...' },
             'downloading': { speed: 0.3, maxProgress: 35, message: 'Downloading audio...' },
             'transcribing': { speed: 0.2, maxProgress: 55, message: 'Transcribing audio...' },
@@ -498,6 +662,7 @@ class SmartProgressBar {
             zh: {
                 title: '处理进度',
                 preparing: '准备中...',
+                uploading: '导入音频...',
                 parsing: '解析音频信息...',
                 downloading: '下载音频...',
                 transcribing: '转录音频...',
@@ -509,6 +674,7 @@ class SmartProgressBar {
             en: {
                 title: 'Processing Progress',
                 preparing: 'Preparing...',
+                uploading: 'Importing audio...',
                 parsing: 'Parsing audio information...',
                 downloading: 'Downloading audio...',
                 transcribing: 'Transcribing audio...',
@@ -547,7 +713,9 @@ class SmartProgressBar {
     detectStage(message, progress) {
         const lowerMessage = message.toLowerCase();
         
-        if (lowerMessage.includes('download') || lowerMessage.includes('下载')) {
+        if (lowerMessage.includes('upload') || lowerMessage.includes('导入')) {
+            this.currentStage = 'uploading';
+        } else if (lowerMessage.includes('download') || lowerMessage.includes('下载')) {
             this.currentStage = 'downloading';
         } else if (lowerMessage.includes('transcrib') || lowerMessage.includes('转录')) {
             this.currentStage = 'transcribing';
@@ -636,6 +804,7 @@ class SmartProgressBar {
             // 没有服务器进度时，根据阶段设置合理的初始上限
             const stageMaxLimits = {
                 'preparing': 8,      // 准备阶段最多到8%
+                'uploading': 14,     // 上传阶段最多到14%
                 'parsing': 15,       // 解析阶段最多到15%
                 'downloading': 25,   // 下载阶段最多到25%
                 'transcribing': 35,  // 转录阶段最多到35%
@@ -657,6 +826,7 @@ class SmartProgressBar {
     calculateProgressIncrement() {
         const stageMultipliers = {
             'preparing': 0.6,     // 准备阶段中等速度
+            'uploading': 0.6,     // 上传阶段较快
             'parsing': 0.8,       // 解析阶段较快
             'downloading': 0.3,   // 下载阶段较慢
             'transcribing': 0.2,  // 转录阶段最慢
@@ -723,22 +893,38 @@ function stopProgressSimulation() {
 
 // 显示结果内容
 function showResultsContent(data, operation = 'transcribe_only') {
+    lastResultData = {
+        ...data,
+        sourceMode: data.sourceMode || selectedSourceMode
+    };
     document.getElementById('loadingState').classList.add('hidden');
     document.getElementById('errorState').classList.add('hidden');
+    document.getElementById('emptyState').classList.add('hidden');
     document.getElementById('resultsContent').classList.remove('hidden');
     
     // 显示播客标题（如果有）
+    const podcastTitleSection = document.getElementById('podcastTitleSection');
     if (data.podcastTitle) {
-        const podcastTitleSection = document.getElementById('podcastTitleSection');
         const podcastTitleText = document.getElementById('podcastTitleText');
         
         podcastTitleText.textContent = data.podcastTitle;
         podcastTitleSection.classList.remove('hidden');
+    } else {
+        podcastTitleSection.classList.add('hidden');
     }
     
     // 准备标签页数据
     const tabs = [];
     
+    // 转录文本标签（总是有）
+    tabs.push({
+        id: 'transcript',
+        icon: '📝',
+        title: currentLang === 'zh' ? '转录文本' : 'Transcript',
+        content: data.transcript || 'No transcript available',
+        contentId: 'transcriptTabContent'
+    });
+
     // AI总结标签（如果有）
     if (data.summary) {
         tabs.push({
@@ -749,15 +935,6 @@ function showResultsContent(data, operation = 'transcribe_only') {
             contentId: 'summaryTabContent'
         });
     }
-    
-    // 转录文本标签（总是有）
-    tabs.push({
-        id: 'transcript',
-        icon: '📝',
-        title: currentLang === 'zh' ? '转录文本' : 'Transcript',
-        content: data.transcript || 'No transcript available',
-        contentId: 'transcriptTabContent'
-    });
     
     // 翻译标签（如果需要且有翻译内容）
     if (data.needsTranslation && data.translation) {
@@ -779,13 +956,16 @@ function showResultsContent(data, operation = 'transcribe_only') {
     // 填充标签页内容
     populateTabContent(tabs);
     
-    // 激活第一个标签页
+    // 激活转录标签页作为默认视图
     if (tabs.length > 0) {
-        activateTab(tabs[0].id);
+        const defaultTab = tabs.find(tab => tab.id === 'transcript') || tabs[0];
+        activateTab(defaultTab.id);
     }
     
     // 显示下载按钮（如果有保存的文件）
     showDownloadButtons(data.savedFiles || []);
+    updateResultMeta(lastResultData);
+    updateActionButtons();
     
     // 重新启用提交按钮
     const submitBtn = document.getElementById('submitBtn');
@@ -795,17 +975,158 @@ function showResultsContent(data, operation = 'transcribe_only') {
 
 // 显示错误状态
 function showError(errorMessage) {
+    lastResultData = null;
+    activeTabId = null;
     document.getElementById('loadingState').classList.add('hidden');
     document.getElementById('resultsContent').classList.add('hidden');
+    document.getElementById('emptyState').classList.add('hidden');
+    document.getElementById('resultMetaBar').classList.add('hidden');
     document.getElementById('errorState').classList.remove('hidden');
     
     const errorDetails = document.getElementById('errorDetails');
     errorDetails.textContent = errorMessage;
+    updateActionButtons();
     
     // 重新启用提交按钮
     const submitBtn = document.getElementById('submitBtn');
     submitBtn.disabled = false;
     submitBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+}
+
+function updateDesktopChrome() {
+    const texts = translations[currentLang];
+    const modeChip = document.getElementById('desktopModeChip');
+    const statusText = document.getElementById('desktopStatusText');
+
+    if (modeChip) {
+        modeChip.innerHTML = `<strong>${desktopState.isDesktop ? texts.desktopModeApp : texts.desktopModeWeb}</strong>`;
+    }
+
+    if (statusText) {
+        statusText.textContent = desktopState.isDesktop ? texts.desktopStatusApp : texts.desktopStatusWeb;
+    }
+}
+
+function updateResultMeta(data) {
+    const metaBar = document.getElementById('resultMetaBar');
+    const texts = translations[currentLang];
+
+    if (!metaBar || !data) {
+        metaBar?.classList.add('hidden');
+        ['resultMetaSource', 'resultMetaLanguage', 'resultMetaDuration', 'resultMetaFiles'].forEach((id) => {
+            document.getElementById(id)?.classList.add('hidden');
+        });
+        return;
+    }
+
+    const metaItems = [
+        {
+            id: 'resultMetaSource',
+            value: (data.sourceMode || selectedSourceMode) === 'file' ? texts.localSourceLabel : texts.remoteSourceLabel
+        },
+        {
+            id: 'resultMetaLanguage',
+            value: data.detectedLanguage ? `${texts.languageLabel}: ${String(data.detectedLanguage).toUpperCase()}` : null
+        },
+        {
+            id: 'resultMetaDuration',
+            value: formatDurationLabel(data.actualDuration || data.estimatedDuration)
+                ? `${texts.durationLabel}: ${formatDurationLabel(data.actualDuration || data.estimatedDuration)}`
+                : null
+        },
+        {
+            id: 'resultMetaFiles',
+            value: data.savedFiles?.length ? `${texts.fileCountLabel}: ${data.savedFiles.length}` : null
+        }
+    ];
+
+    let hasVisibleItems = false;
+    metaItems.forEach(({ id, value }) => {
+        const element = document.getElementById(id);
+        if (!element) return;
+
+        if (value) {
+            element.textContent = value;
+            element.classList.remove('hidden');
+            hasVisibleItems = true;
+        } else {
+            element.classList.add('hidden');
+        }
+    });
+
+    metaBar.classList.toggle('hidden', !hasVisibleItems);
+}
+
+function getSavedFileForActiveTab() {
+    if (!lastResultData?.savedFiles?.length) {
+        return null;
+    }
+
+    const preferredType = activeTabId === 'summary'
+        ? 'summary'
+        : activeTabId === 'translation'
+            ? 'translation'
+            : 'transcript';
+
+    return lastResultData.savedFiles.find((file) => file.type === preferredType)
+        || lastResultData.savedFiles.find((file) => file.type === 'transcript')
+        || lastResultData.savedFiles[0];
+}
+
+function updateActionButtons() {
+    const copyButton = document.getElementById('copyActiveTabBtn');
+    const revealButton = document.getElementById('revealSavedFileBtn');
+
+    if (copyButton) {
+        copyButton.classList.toggle('hidden', !(lastResultData && activeTabId));
+    }
+
+    if (revealButton) {
+        const hasRevealedTarget = Boolean(desktopState.isDesktop && getSavedFileForActiveTab()?.path);
+        revealButton.classList.toggle('hidden', !hasRevealedTarget);
+    }
+}
+
+async function copyActiveTabContent() {
+    const activeContent = document.querySelector('.tab-content:not(.hidden) .prose');
+    if (!activeContent) {
+        return;
+    }
+
+    const text = activeContent.innerText.trim();
+    if (!text) {
+        return;
+    }
+
+    await navigator.clipboard.writeText(text);
+
+    const button = document.getElementById('copyActiveTabBtn');
+    const label = document.getElementById('copyActiveText');
+    if (button && label) {
+        const originalLabel = translations[currentLang].copyActiveText;
+        label.textContent = translations[currentLang].copySuccess;
+        button.disabled = true;
+
+        setTimeout(() => {
+            label.textContent = originalLabel;
+            button.disabled = false;
+        }, 1500);
+    }
+}
+
+async function revealSavedFile() {
+    const bridge = getDesktopBridge();
+    const file = getSavedFileForActiveTab();
+
+    if (!bridge || !desktopState.isDesktop || !file?.path) {
+        return;
+    }
+
+    try {
+        await bridge.revealPath(file.path);
+    } catch (error) {
+        console.warn('Failed to reveal saved file:', error);
+    }
 }
 
 // 验证播客链接格式
@@ -839,17 +1160,176 @@ document.getElementById('podcastUrl').addEventListener('input', function(e) {
 // 监听操作类型变化的函数（将在主初始化中调用）
 function setupOperationTypeListeners() {
     const operationRadios = document.querySelectorAll('input[name="operation"]');
-    operationRadios.forEach(radio => {
-        radio.addEventListener('change', function() {
-            const outputLanguageContainer = document.getElementById('outputLanguage').closest('div');
-            if (this.value === 'transcribe_only') {
-                outputLanguageContainer.style.opacity = '0.5';
-                document.getElementById('outputLanguage').disabled = true;
-            } else {
-                outputLanguageContainer.style.opacity = '1';
-                document.getElementById('outputLanguage').disabled = false;
-            }
+    const syncOperationState = (selectedValue) => {
+        const outputLanguageContainer = document.getElementById('outputLanguage').closest('div');
+
+        operationRadios.forEach((radio) => {
+            radio.closest('.source-option')?.classList.toggle('active', radio.value === selectedValue);
         });
+
+        if (selectedValue === 'transcribe_only') {
+            outputLanguageContainer.style.opacity = '0.5';
+            document.getElementById('outputLanguage').disabled = true;
+        } else {
+            outputLanguageContainer.style.opacity = '1';
+            document.getElementById('outputLanguage').disabled = false;
+        }
+    };
+
+    operationRadios.forEach((radio) => {
+        radio.addEventListener('change', function() {
+            syncOperationState(this.value);
+        });
+    });
+
+    const activeValue = document.querySelector('input[name="operation"]:checked')?.value || 'transcribe_summarize';
+    syncOperationState(activeValue);
+}
+
+function setupSourceModeListeners() {
+    const sourceRadios = document.querySelectorAll('input[name="sourceMode"]');
+    sourceRadios.forEach((radio) => {
+        radio.addEventListener('change', () => {
+            selectedSourceMode = radio.value;
+            updateSourceModeUI();
+        });
+    });
+
+    updateSourceModeUI();
+}
+
+function updateSourceModeUI() {
+    const urlSection = document.getElementById('urlSourceSection');
+    const fileSection = document.getElementById('fileSourceSection');
+    const urlInput = document.getElementById('podcastUrl');
+    const fileInput = document.getElementById('audioFileInput');
+
+    selectedSourceMode = document.querySelector('input[name="sourceMode"]:checked')?.value || 'url';
+
+    urlSection?.classList.toggle('hidden', selectedSourceMode !== 'url');
+    fileSection?.classList.toggle('hidden', selectedSourceMode !== 'file');
+
+    if (urlInput) {
+        urlInput.disabled = selectedSourceMode !== 'url';
+        urlInput.required = selectedSourceMode === 'url';
+    }
+
+    if (fileInput) {
+        fileInput.disabled = selectedSourceMode !== 'file';
+    }
+
+    document.querySelectorAll('[data-source-option]').forEach((option) => {
+        option.classList.toggle('active', option.dataset.sourceOption === selectedSourceMode);
+    });
+}
+
+function isSupportedAudioFile(file) {
+    if (!file) {
+        return false;
+    }
+
+    if (file.type?.startsWith('audio/')) {
+        return true;
+    }
+
+    return /\.(mp3|m4a|wav|aac|ogg|flac|mp4|webm)$/i.test(file.name || '');
+}
+
+function setupAudioFilePicker() {
+    const pickButton = document.getElementById('pickAudioButton');
+    const clearButton = document.getElementById('clearSelectedFile');
+    const fileInput = document.getElementById('audioFileInput');
+    const fileDropzone = document.getElementById('fileDropzone');
+
+    pickButton?.addEventListener('click', () => fileInput?.click());
+    clearButton?.addEventListener('click', clearSelectedAudioFile);
+
+    fileInput?.addEventListener('change', (event) => {
+        handleAudioFileSelection(event.target.files);
+    });
+
+    ['dragenter', 'dragover'].forEach((eventName) => {
+        fileDropzone?.addEventListener(eventName, (event) => {
+            event.preventDefault();
+            fileDropzone.classList.add('dragover');
+        });
+    });
+
+    ['dragleave', 'dragend'].forEach((eventName) => {
+        fileDropzone?.addEventListener(eventName, () => {
+            fileDropzone.classList.remove('dragover');
+        });
+    });
+
+    fileDropzone?.addEventListener('drop', (event) => {
+        event.preventDefault();
+        fileDropzone.classList.remove('dragover');
+        handleAudioFileSelection(event.dataTransfer?.files);
+    });
+}
+
+function handleAudioFileSelection(fileList) {
+    const file = fileList?.[0];
+    if (!file) {
+        return;
+    }
+
+    if (!isSupportedAudioFile(file)) {
+        showError(currentLang === 'zh' ? '请选择支持的音频文件格式' : 'Please choose a supported audio file');
+        return;
+    }
+
+    selectedAudioFile = file;
+    updateSelectedFileCard();
+}
+
+function clearSelectedAudioFile() {
+    selectedAudioFile = null;
+    const fileInput = document.getElementById('audioFileInput');
+    if (fileInput) {
+        fileInput.value = '';
+    }
+    updateSelectedFileCard();
+}
+
+function updateSelectedFileCard() {
+    const card = document.getElementById('selectedFileCard');
+    const name = document.getElementById('selectedFileName');
+    const meta = document.getElementById('selectedFileMeta');
+    const clearButton = document.getElementById('clearSelectedFile');
+    const label = document.getElementById('selectedFileLabel');
+
+    if (label) {
+        label.textContent = translations[currentLang].selectedFileLabel;
+    }
+
+    if (!card || !name || !meta || !clearButton) {
+        return;
+    }
+
+    if (!selectedAudioFile) {
+        card.classList.add('hidden');
+        clearButton.classList.add('hidden');
+        return;
+    }
+
+    name.textContent = selectedAudioFile.name;
+    meta.textContent = `${translations[currentLang].localFileReady} • ${formatFileSize(selectedAudioFile.size)}`;
+    card.classList.remove('hidden');
+    clearButton.classList.remove('hidden');
+}
+
+function setupWorkspaceActions() {
+    document.getElementById('copyActiveTabBtn')?.addEventListener('click', async () => {
+        try {
+            await copyActiveTabContent();
+        } catch (error) {
+            console.warn('Copy failed:', error);
+        }
+    });
+
+    document.getElementById('revealSavedFileBtn')?.addEventListener('click', async () => {
+        await revealSavedFile();
     });
 }
 
@@ -876,19 +1356,19 @@ function showDownloadButtons(savedFiles) {
         const link = document.createElement('a');
         link.href = `/api/download/${file.filename}`;
         link.download = file.filename;
-        link.className = 'bg-blue-50 text-blue-600 hover:bg-blue-100 hover:text-blue-700 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 flex items-center gap-2 no-underline';
+        link.className = 'download-button no-underline';
         
         const buttonTextMap = {
-            'transcript': currentLang === 'zh' ? 'Download Transcript' : 'Download Transcript',
-            'summary': currentLang === 'zh' ? 'Download Summary' : 'Download Summary',
-            'translation': currentLang === 'zh' ? 'Download Translation' : 'Download Translation'
+            transcript: currentLang === 'zh' ? '下载转录稿' : 'Download transcript',
+            summary: currentLang === 'zh' ? '下载总结' : 'Download summary',
+            translation: currentLang === 'zh' ? '下载翻译' : 'Download translation'
         };
         
         const buttonText = buttonTextMap[file.type] || `Download ${file.type}`;
         
         // 创建文本内容
         const textSpan = document.createElement('span');
-        textSpan.textContent = buttonText;
+        textSpan.textContent = `${buttonText} · ${formatFileSize(file.size || 0)}`;
         
         // 添加到链接中
         link.appendChild(textSpan);
@@ -902,48 +1382,8 @@ function showDownloadButtons(savedFiles) {
 
 // 更新下载按钮的语言
 function updateDownloadButtonsLanguage() {
-    const downloadButtons = document.getElementById('downloadButtons');
-    if (!downloadButtons) return;
-    
-    // 从现有链接中提取文件信息
-    const links = downloadButtons.querySelectorAll('a[download]');
-    const savedFiles = [];
-    
-    links.forEach(link => {
-        const filename = link.getAttribute('download');
-        const linkText = link.textContent;
-        
-        // 根据文件名判断类型
-        let type = 'unknown';
-        if (filename.includes('_transcript.')) {
-            type = 'transcript';
-        } else if (filename.includes('_summary.')) {
-            type = 'summary';
-        } else if (filename.includes('_translation.')) {
-            type = 'translation';
-        }
-        
-        // 从链接文本中提取文件大小（提取括号中的内容）
-        let size = 0;
-        const sizeMatch = linkText.match(/\((\d+\.?\d*)\s*(KB|MB|GB)\)/);
-        if (sizeMatch) {
-            const value = parseFloat(sizeMatch[1]);
-            const unit = sizeMatch[2];
-            if (unit === 'KB') size = value * 1024;
-            else if (unit === 'MB') size = value * 1024 * 1024;
-            else if (unit === 'GB') size = value * 1024 * 1024 * 1024;
-        }
-        
-        savedFiles.push({
-            filename: filename,
-            type: type,
-            size: size
-        });
-    });
-    
-    // 重新生成下载链接
-    if (savedFiles.length > 0) {
-        showDownloadButtons(savedFiles);
+    if (lastResultData?.savedFiles?.length) {
+        showDownloadButtons(lastResultData.savedFiles);
     }
 }
 
@@ -968,7 +1408,7 @@ function updateLanguageToggle() {
 }
 
 // 页面加载完成后初始化
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', async function() {
     // 设置正确的语言属性
     document.documentElement.lang = currentLang === 'zh' ? 'zh-CN' : 'en';
     
@@ -983,6 +1423,10 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // 设置操作类型监听器
     setupOperationTypeListeners();
+    setupSourceModeListeners();
+    setupAudioFilePicker();
+    setupWorkspaceActions();
+    await initializeDesktopMode();
 });
 
 // 移除了自动检查已完成文件的功能，让用户每次都有干净的开始
@@ -995,6 +1439,7 @@ function createTabNavigation(tabs) {
     tabs.forEach(tab => {
         const tabButton = document.createElement('button');
         tabButton.className = 'tab-button';
+        tabButton.type = 'button';
         tabButton.setAttribute('data-tab', tab.id);
         tabButton.innerHTML = `
             <span>${tab.icon}</span>
@@ -1019,6 +1464,8 @@ function populateTabContent(tabs) {
 }
 
 function activateTab(tabId) {
+    activeTabId = tabId;
+
     // 移除所有活动状态
     document.querySelectorAll('.tab-button').forEach(btn => {
         btn.classList.remove('active');
@@ -1042,6 +1489,8 @@ function activateTab(tabId) {
     if (downloadSection) {
         downloadSection.classList.remove('hidden');
     }
+
+    updateActionButtons();
 }
 
 // SSE 进度监听函数
