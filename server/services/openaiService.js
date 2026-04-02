@@ -118,6 +118,46 @@ function normalizeHotwords(value) {
         .slice(0, 20);
 }
 
+function extractStructuredProcessError(rawValue) {
+    const rawText = String(rawValue || '').trim();
+    if (!rawText) {
+        return '';
+    }
+
+    const lines = rawText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).reverse();
+    for (const line of lines) {
+        try {
+            const payload = JSON.parse(line);
+            if (payload && typeof payload === 'object') {
+                if (payload.error) {
+                    return String(payload.error).trim();
+                }
+                if (payload.message) {
+                    return String(payload.message).trim();
+                }
+            }
+        } catch (_error) {
+            // ignore non-JSON lines and keep looking for a structured payload
+        }
+    }
+
+    return rawText;
+}
+
+function buildProcessExecutionError(error, fallbackMessage) {
+    const detail = extractStructuredProcessError(error?.stdout) || extractStructuredProcessError(error?.stderr);
+    if (detail) {
+        return new Error(detail);
+    }
+
+    const message = String(error?.message || '').trim();
+    if (!message) {
+        return new Error(fallbackMessage);
+    }
+
+    return new Error(message.startsWith(fallbackMessage) ? message : `${fallbackMessage}: ${message}`);
+}
+
 const SPEAKER_LINE_PREFIX_RE = /^((?:speaker|host|guest)\s*\d*|主持人(?:\s*\d+)?|嘉宾(?:\s*\d+)?|说话人\s*\d+|[A-Za-z][A-Za-z0-9·_-]{0,23}|[\u4e00-\u9fa5·]{2,4})(?:\s*[:：]\s*|\s+-\s+)/i;
 const SHORT_TRANSCRIPT_OPTIMIZATION_THRESHOLD = 80;
 const OPTIMIZATION_DRIFT_REPLY_RE = /(please provide .*transcript|ready to assist|according to your requirements|请提供您需要优化|请提供.*转录文本|一旦您发送内容|按照您的要求进行|ready to help|provide the audio transcript)/i;
@@ -974,10 +1014,15 @@ async function transcribeAudioWithWhisperLocal(audioPath, language = null, trans
         args.push('--prompt', prompt);
     }
 
-    const { stdout } = await execFileAsync(pythonBin, args, {
-        timeout: 60 * 60 * 1000,
-        maxBuffer: 1024 * 1024 * 20
-    });
+    let stdout;
+    try {
+        ({ stdout } = await execFileAsync(pythonBin, args, {
+            timeout: 60 * 60 * 1000,
+            maxBuffer: 1024 * 1024 * 20
+        }));
+    } catch (error) {
+        throw buildProcessExecutionError(error, 'Whisper 本地转录失败');
+    }
     const result = JSON.parse(stdout);
 
     if (!result?.success) {
@@ -1023,14 +1068,19 @@ async function transcribeAudioWithWhisperXLocal(audioPath, language = null, tran
         args.push('--prompt', prompt);
     }
 
-    const { stdout } = await execFileAsync(pythonBin, args, {
-        timeout: 2 * 60 * 60 * 1000,
-        maxBuffer: 1024 * 1024 * 40,
-        env: {
-            ...process.env,
-            PYANNOTE_TOKEN: getPyannoteToken()
-        }
-    });
+    let stdout;
+    try {
+        ({ stdout } = await execFileAsync(pythonBin, args, {
+            timeout: 2 * 60 * 60 * 1000,
+            maxBuffer: 1024 * 1024 * 40,
+            env: {
+                ...process.env,
+                PYANNOTE_TOKEN: getPyannoteToken()
+            }
+        }));
+    } catch (error) {
+        throw buildProcessExecutionError(error, 'WhisperX 本地转录失败');
+    }
 
     const result = JSON.parse(stdout);
     if (!result?.success) {
@@ -1075,14 +1125,19 @@ async function transcribeAudioWithQwen3Asr(audioPath, language = null, transcrip
         args.push('--context', context);
     }
 
-    const { stdout } = await execFileAsync(pythonBin, args, {
-        timeout: 2 * 60 * 60 * 1000,
-        maxBuffer: 1024 * 1024 * 40,
-        env: {
-            ...process.env,
-            DASHSCOPE_API_KEY: process.env.DASHSCOPE_API_KEY
-        }
-    });
+    let stdout;
+    try {
+        ({ stdout } = await execFileAsync(pythonBin, args, {
+            timeout: 2 * 60 * 60 * 1000,
+            maxBuffer: 1024 * 1024 * 40,
+            env: {
+                ...process.env,
+                DASHSCOPE_API_KEY: process.env.DASHSCOPE_API_KEY
+            }
+        }));
+    } catch (error) {
+        throw buildProcessExecutionError(error, 'Qwen3-ASR 转录失败');
+    }
 
     const result = JSON.parse(stdout);
     if (!result?.success) {
@@ -1111,14 +1166,19 @@ async function transcribeAudioWithFunAsrRealtime(audioPath, language = null, tra
         args.push('--language', language);
     }
 
-    const { stdout } = await execFileAsync(pythonBin, args, {
-        timeout: 60 * 60 * 1000,
-        maxBuffer: 1024 * 1024 * 20,
-        env: {
-            ...process.env,
-            DASHSCOPE_API_KEY: process.env.DASHSCOPE_API_KEY
-        }
-    });
+    let stdout;
+    try {
+        ({ stdout } = await execFileAsync(pythonBin, args, {
+            timeout: 60 * 60 * 1000,
+            maxBuffer: 1024 * 1024 * 20,
+            env: {
+                ...process.env,
+                DASHSCOPE_API_KEY: process.env.DASHSCOPE_API_KEY
+            }
+        }));
+    } catch (error) {
+        throw buildProcessExecutionError(error, 'DashScope ASR 转录失败');
+    }
 
     const result = JSON.parse(stdout);
     if (!result?.success) {
@@ -1156,14 +1216,19 @@ async function transcribeAudioWithFunAsrFileDiarization(_audioPath, language = n
         DASHSCOPE_API_ROOT
     ];
 
-    const { stdout } = await execFileAsync(pythonBin, args, {
-        timeout: 2 * 60 * 60 * 1000,
-        maxBuffer: 1024 * 1024 * 40,
-        env: {
-            ...process.env,
-            DASHSCOPE_API_KEY: process.env.DASHSCOPE_API_KEY
-        }
-    });
+    let stdout;
+    try {
+        ({ stdout } = await execFileAsync(pythonBin, args, {
+            timeout: 2 * 60 * 60 * 1000,
+            maxBuffer: 1024 * 1024 * 40,
+            env: {
+                ...process.env,
+                DASHSCOPE_API_KEY: process.env.DASHSCOPE_API_KEY
+            }
+        }));
+    } catch (error) {
+        throw buildProcessExecutionError(error, 'Fun-ASR 录音文件转录失败');
+    }
 
     const result = JSON.parse(stdout);
     if (!result?.success) {
