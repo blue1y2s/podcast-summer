@@ -4,6 +4,8 @@
 
 **中文 | [English](README.md)**
 
+![Podcast Transcriber Screenshot](public/screenshot_zh.png)
+
 ## 简介
 
 Podcast Summer 是一个 Web 应用，用来把播客链接或本地音频处理成 transcript、summary，以及按需生成的 translation。

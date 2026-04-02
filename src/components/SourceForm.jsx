@@ -1,7 +1,14 @@
+import { useEffect, useRef, useState } from 'react';
 import { FilePicker } from './FilePicker';
 import { HistoryStrip } from './HistoryStrip';
 import { SegmentedControl } from './ui/SegmentedControl';
 import { asrBackendOptions, languageOptions, outputLanguageOptions } from '../lib/translations';
+
+const HISTORY_PANEL_STORAGE_KEY = 'podcast-transcriber.sidebar-history-height';
+const DEFAULT_HISTORY_PANEL_HEIGHT = 240;
+const MIN_HISTORY_PANEL_HEIGHT = 152;
+const MIN_CONFIG_PANEL_HEIGHT = 280;
+const RESIZER_HEIGHT = 20;
 
 export function SourceForm({
   text,
@@ -22,7 +29,19 @@ export function SourceForm({
   onHistoryDelete,
   onLanguageToggle
 }) {
+  const layoutRef = useRef(null);
+  const dragStateRef = useRef(null);
   const urlOnlyAsrBackends = new Set(['fun_asr_file_diarization']);
+  const hasHistory = Boolean(historyItems?.length);
+  const [isResizingHistory, setIsResizingHistory] = useState(false);
+  const [historyDockHeight, setHistoryDockHeight] = useState(() => {
+    if (typeof window === 'undefined') {
+      return DEFAULT_HISTORY_PANEL_HEIGHT;
+    }
+
+    const savedHeight = Number(window.localStorage.getItem(HISTORY_PANEL_STORAGE_KEY));
+    return Number.isFinite(savedHeight) ? savedHeight : DEFAULT_HISTORY_PANEL_HEIGHT;
+  });
   const sourceOptions = [
     {
       value: 'url',
@@ -47,10 +66,144 @@ export function SourceForm({
 
   const selectThemeClass = 'surface-select-dark';
   const inputThemeClass = 'surface-input-dark';
+  const helperTextClass = 'sidebar-helper-text';
   const visibleAsrBackendOptions = asrBackendOptions.map((option) => ({
     ...option,
     disabled: sourceMode === 'file' && urlOnlyAsrBackends.has(option.value)
   }));
+
+  function clampHistoryHeight(nextHeight, containerHeight = layoutRef.current?.clientHeight || 0) {
+    if (!containerHeight) {
+      return Math.max(MIN_HISTORY_PANEL_HEIGHT, Math.round(nextHeight));
+    }
+
+    const maxHeight = Math.max(
+      MIN_HISTORY_PANEL_HEIGHT,
+      Math.round(containerHeight - MIN_CONFIG_PANEL_HEIGHT - RESIZER_HEIGHT)
+    );
+
+    return Math.min(maxHeight, Math.max(MIN_HISTORY_PANEL_HEIGHT, Math.round(nextHeight)));
+  }
+
+  useEffect(() => {
+    if (!hasHistory || typeof window === 'undefined') {
+      return;
+    }
+
+    window.localStorage.setItem(HISTORY_PANEL_STORAGE_KEY, String(historyDockHeight));
+  }, [hasHistory, historyDockHeight]);
+
+  useEffect(() => {
+    if (!hasHistory || typeof ResizeObserver === 'undefined' || !layoutRef.current) {
+      return undefined;
+    }
+
+    const observer = new ResizeObserver(([entry]) => {
+      const nextContainerHeight = entry?.contentRect?.height || layoutRef.current?.clientHeight || 0;
+      if (!nextContainerHeight) {
+        return;
+      }
+
+      setHistoryDockHeight((current) => clampHistoryHeight(current, nextContainerHeight));
+    });
+
+    observer.observe(layoutRef.current);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [hasHistory]);
+
+  useEffect(() => {
+    if (!hasHistory) {
+      dragStateRef.current = null;
+      setIsResizingHistory(false);
+    }
+  }, [hasHistory]);
+
+  useEffect(() => {
+    if (!isResizingHistory) {
+      return undefined;
+    }
+
+    function stopResize() {
+      dragStateRef.current = null;
+      setIsResizingHistory(false);
+    }
+
+    function handlePointerMove(event) {
+      const dragState = dragStateRef.current;
+      if (!dragState) {
+        return;
+      }
+
+      setHistoryDockHeight(clampHistoryHeight(dragState.containerBottom - event.clientY, dragState.containerHeight));
+    }
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', stopResize);
+    window.addEventListener('pointercancel', stopResize);
+    window.addEventListener('blur', stopResize);
+
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', stopResize);
+      window.removeEventListener('pointercancel', stopResize);
+      window.removeEventListener('blur', stopResize);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizingHistory]);
+
+  function handleHistoryResizeStart(event) {
+    if (!hasHistory || event.button !== 0 || !layoutRef.current) {
+      return;
+    }
+
+    event.preventDefault();
+
+    const rect = layoutRef.current.getBoundingClientRect();
+    dragStateRef.current = {
+      containerBottom: rect.bottom,
+      containerHeight: rect.height
+    };
+    setIsResizingHistory(true);
+  }
+
+  function handleHistoryResizeKeyDown(event) {
+    if (!hasHistory) {
+      return;
+    }
+
+    const containerHeight = layoutRef.current?.clientHeight || 0;
+    const maxHeight = Math.max(MIN_HISTORY_PANEL_HEIGHT, Math.round(containerHeight - MIN_CONFIG_PANEL_HEIGHT - RESIZER_HEIGHT));
+
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      setHistoryDockHeight((current) => clampHistoryHeight(current + 24, containerHeight));
+      return;
+    }
+
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      setHistoryDockHeight((current) => clampHistoryHeight(current - 24, containerHeight));
+      return;
+    }
+
+    if (event.key === 'Home') {
+      event.preventDefault();
+      setHistoryDockHeight(MIN_HISTORY_PANEL_HEIGHT);
+      return;
+    }
+
+    if (event.key === 'End') {
+      event.preventDefault();
+      setHistoryDockHeight(maxHeight);
+    }
+  }
 
   return (
     <aside className="control-card overflow-hidden lg:sticky lg:top-3 lg:h-[calc(100vh-1.5rem)]">
@@ -71,8 +224,8 @@ export function SourceForm({
           </div>
         </div>
 
-        <form className="flex h-full min-h-0 flex-col gap-4 overflow-hidden" onSubmit={onSubmit}>
-          <div className="sidebar-scroll-pane">
+        <form className="sidebar-form" onSubmit={onSubmit}>
+          <div ref={layoutRef} className="sidebar-stack">
             <section className="sidebar-block space-y-3">
               <label className="eyebrow-inverse">{text.sourceLabel}</label>
               <SegmentedControl
@@ -98,7 +251,7 @@ export function SourceForm({
                   onChange={(event) => onFormChange('url', event.target.value)}
                   required
                 />
-                <p className="text-xs leading-6 text-base-content/55">{text.urlHelper}</p>
+                <p className={helperTextClass}>{text.urlHelper}</p>
               </section>
             ) : (
               <section className="sidebar-block space-y-3">
@@ -141,7 +294,7 @@ export function SourceForm({
                   ))}
                 </select>
                 {sourceMode === 'file' ? (
-                  <p className="text-xs leading-6 text-base-content/55">{text.asrBackendFileHint}</p>
+                  <p className={helperTextClass}>{text.asrBackendFileHint}</p>
                 ) : null}
               </div>
 
@@ -194,7 +347,7 @@ export function SourceForm({
                 value={form.hotwords}
                 onChange={(event) => onFormChange('hotwords', event.target.value)}
               />
-              <p className="text-xs leading-6 text-base-content/55">{text.hotwordsHint}</p>
+              <p className={helperTextClass}>{text.hotwordsHint}</p>
             </section>
 
             <section className="sidebar-block space-y-3">
@@ -209,12 +362,32 @@ export function SourceForm({
                 value={form.transcriptionContext}
                 onChange={(event) => onFormChange('transcriptionContext', event.target.value)}
               />
-              <p className="text-xs leading-6 text-base-content/55">{text.transcriptionContextHint}</p>
+              <p className={helperTextClass}>{text.transcriptionContextHint}</p>
             </section>
           </div>
 
-          {historyItems?.length ? (
-            <div className="sidebar-history-dock">
+          {hasHistory ? (
+            <>
+              <div
+                className={`sidebar-resizer ${isResizingHistory ? 'sidebar-resizer-active' : ''}`}
+                role="separator"
+                aria-orientation="horizontal"
+                aria-label={text.historyLabel}
+                tabIndex={0}
+                onPointerDown={handleHistoryResizeStart}
+                onKeyDown={handleHistoryResizeKeyDown}
+              >
+                <span className="sidebar-resizer-line" aria-hidden="true" />
+                <span className="sidebar-resizer-handle" aria-hidden="true" />
+              </div>
+
+              <div
+                className="sidebar-history-dock"
+                style={{
+                  flexBasis: `${historyDockHeight}px`,
+                  maxHeight: 'none'
+                }}
+              >
               <div className="sidebar-history-shell">
                 <HistoryStrip
                   text={text}
@@ -228,7 +401,8 @@ export function SourceForm({
                   tone="dark"
                 />
               </div>
-            </div>
+              </div>
+            </>
           ) : null}
 
           <div className="sidebar-submit-row">

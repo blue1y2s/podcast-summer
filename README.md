@@ -4,6 +4,8 @@ Web-first podcast transcription and summarization.
 
 English | [中文](README_zh.md)
 
+![Podcast Transcriber Screenshot](public/screenshot_en.png)
+
 ## Overview
 
 Podcast Summer is a web app for turning podcast links or uploaded audio into transcripts, summaries, and optional translations.

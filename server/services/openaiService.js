@@ -708,6 +708,333 @@ function buildStructuredTranscriptFromSegments(rawSegments = [], options = {}) {
     };
 }
 
+function isGenericSpeakerLabel(label) {
+    const normalized = normalizeSpeakerLabel(label);
+    return /^(speaker|host|guest|说话人|主持人|嘉宾)\s*([0-9]+)?$/i.test(normalized);
+}
+
+function sanitizeAttributedSpeakerName(value) {
+    const normalized = String(value || '')
+        .trim()
+        .replace(/^["'“”‘’`]+|["'“”‘’`]+$/g, '')
+        .replace(/\s+/g, ' ')
+        .replace(/[。！!？?,，;；:：]+$/g, '')
+        .replace(/^\s*(?:我是|我叫|名字是|I am|I'm|This is)\s+/i, '')
+        .trim();
+
+    if (!normalized || isGenericSpeakerLabel(normalized)) {
+        return '';
+    }
+
+    if (normalized.length < 2 || normalized.length > 40) {
+        return '';
+    }
+
+    if (!/^[A-Za-z\u4e00-\u9fa5·' ._-]+$/.test(normalized)) {
+        return '';
+    }
+
+    return normalized;
+}
+
+function includesSpeakerEvidence(haystack, needle) {
+    const source = String(haystack || '').trim();
+    const candidate = String(needle || '').trim();
+    if (!source || !candidate) {
+        return false;
+    }
+
+    return source.includes(candidate) || source.toLowerCase().includes(candidate.toLowerCase());
+}
+
+function buildHeuristicSpeakerNameMap(structuredTranscript) {
+    const segments = Array.isArray(structuredTranscript?.segments) ? structuredTranscript.segments : [];
+    const candidatesBySpeaker = new Map();
+
+    for (const segment of segments) {
+        const speaker = normalizeSpeakerLabel(segment?.speaker);
+        if (!speaker || !isGenericSpeakerLabel(speaker)) {
+            continue;
+        }
+
+        const introducedName = sanitizeAttributedSpeakerName(extractIntroducedSpeakerName(segment?.text));
+        if (!introducedName || isHostKeyword(introducedName) || isGuestKeyword(introducedName)) {
+            continue;
+        }
+
+        if (!candidatesBySpeaker.has(speaker)) {
+            candidatesBySpeaker.set(speaker, []);
+        }
+
+        const speakerCandidates = candidatesBySpeaker.get(speaker);
+        if (!speakerCandidates.includes(introducedName)) {
+            speakerCandidates.push(introducedName);
+        }
+    }
+
+    const usedNames = new Set();
+    const resolvedMap = {};
+    for (const [speaker, candidates] of candidatesBySpeaker.entries()) {
+        if (candidates.length !== 1) {
+            continue;
+        }
+
+        const [candidate] = candidates;
+        if (usedNames.has(candidate)) {
+            continue;
+        }
+
+        usedNames.add(candidate);
+        resolvedMap[speaker] = candidate;
+    }
+
+    return resolvedMap;
+}
+
+function extractJsonPayload(text) {
+    const rawText = String(text || '').trim();
+    if (!rawText) {
+        return null;
+    }
+
+    const fencedMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    const candidates = fencedMatch ? [fencedMatch[1], rawText] : [rawText];
+
+    for (const candidate of candidates) {
+        const trimmed = String(candidate || '').trim();
+        if (!trimmed) {
+            continue;
+        }
+
+        try {
+            return JSON.parse(trimmed);
+        } catch (_error) {
+            const firstBrace = trimmed.indexOf('{');
+            const lastBrace = trimmed.lastIndexOf('}');
+            if (firstBrace >= 0 && lastBrace > firstBrace) {
+                try {
+                    return JSON.parse(trimmed.slice(firstBrace, lastBrace + 1));
+                } catch (_innerError) {
+                    // keep trying
+                }
+            }
+        }
+    }
+
+    return null;
+}
+
+function buildSpeakerAttributionEvidence(structuredTranscript, maxChars = 5000) {
+    const segments = Array.isArray(structuredTranscript?.segments) ? structuredTranscript.segments : [];
+    const selectedLines = [];
+    const seenLines = new Set();
+    const perSpeakerCounts = new Map();
+    let usedChars = 0;
+
+    const prioritizedSegments = [
+        ...segments.filter((segment) => extractIntroducedSpeakerName(segment?.text)),
+        ...segments
+    ];
+
+    for (const segment of prioritizedSegments) {
+        const speaker = normalizeSpeakerLabel(segment?.speaker);
+        if (!speaker || !isGenericSpeakerLabel(speaker)) {
+            continue;
+        }
+
+        const seenCount = perSpeakerCounts.get(speaker) || 0;
+        if (seenCount >= 4) {
+            continue;
+        }
+
+        const text = String(segment?.text || '').trim();
+        if (!text) {
+            continue;
+        }
+
+        const line = `${speaker}${segment?.timeLabel ? ` [${segment.timeLabel}]` : ''}: ${text}`;
+        if (seenLines.has(line)) {
+            continue;
+        }
+        if (usedChars + line.length > maxChars && selectedLines.length > 0) {
+            break;
+        }
+
+        selectedLines.push(line);
+        seenLines.add(line);
+        perSpeakerCounts.set(speaker, seenCount + 1);
+        usedChars += line.length + 2;
+    }
+
+    return selectedLines.join('\n\n');
+}
+
+function parseSpeakerAttributionMap(rawContent, unresolvedSpeakers, evidenceCorpus) {
+    const payload = extractJsonPayload(rawContent);
+    if (!payload || typeof payload !== 'object') {
+        return {};
+    }
+
+    const rawMap = payload.speaker_map && typeof payload.speaker_map === 'object'
+        ? payload.speaker_map
+        : payload;
+    const allowedSpeakers = new Set(unresolvedSpeakers.map((speaker) => normalizeSpeakerLabel(speaker)));
+    const usedNames = new Set();
+    const resolvedMap = {};
+
+    for (const [rawSpeaker, rawName] of Object.entries(rawMap)) {
+        const speaker = normalizeSpeakerLabel(rawSpeaker);
+        if (!allowedSpeakers.has(speaker)) {
+            continue;
+        }
+
+        const candidateName = sanitizeAttributedSpeakerName(rawName);
+        if (!candidateName || usedNames.has(candidateName)) {
+            continue;
+        }
+
+        if (!includesSpeakerEvidence(evidenceCorpus, candidateName)) {
+            continue;
+        }
+
+        usedNames.add(candidateName);
+        resolvedMap[speaker] = candidateName;
+    }
+
+    return resolvedMap;
+}
+
+function applySpeakerNameMap(structuredTranscript, speakerNameMap) {
+    if (!structuredTranscript || !speakerNameMap || Object.keys(speakerNameMap).length === 0) {
+        return structuredTranscript;
+    }
+
+    const segments = Array.isArray(structuredTranscript.segments) ? structuredTranscript.segments : [];
+    let changed = false;
+    const nextSegments = segments.map((segment) => {
+        const normalizedSpeaker = normalizeSpeakerLabel(segment?.speaker);
+        const mappedSpeaker = normalizedSpeaker ? speakerNameMap[normalizedSpeaker] : null;
+        if (!mappedSpeaker || mappedSpeaker === segment?.speaker) {
+            return segment;
+        }
+
+        changed = true;
+        return {
+            ...segment,
+            speaker: mappedSpeaker
+        };
+    });
+
+    if (!changed) {
+        return structuredTranscript;
+    }
+
+    return {
+        ...structuredTranscript,
+        segments: nextSegments
+    };
+}
+
+async function attributeSpeakerNamesForStructuredTranscript(structuredTranscript, options = {}) {
+    const segments = Array.isArray(structuredTranscript?.segments) ? structuredTranscript.segments : [];
+    if (segments.length === 0) {
+        return structuredTranscript;
+    }
+
+    const genericSpeakers = [...new Set(
+        segments
+            .map((segment) => normalizeSpeakerLabel(segment?.speaker))
+            .filter((speaker) => speaker && isGenericSpeakerLabel(speaker))
+    )];
+    if (genericSpeakers.length === 0) {
+        return structuredTranscript;
+    }
+
+    const heuristicMap = buildHeuristicSpeakerNameMap(structuredTranscript);
+    let speakerNameMap = { ...heuristicMap };
+    const unresolvedSpeakers = genericSpeakers.filter((speaker) => !speakerNameMap[speaker]);
+    if (unresolvedSpeakers.length === 0 || !AI_API_KEY) {
+        return applySpeakerNameMap(structuredTranscript, speakerNameMap);
+    }
+
+    const transcriptLanguage = options.transcriptLanguage === 'zh' ? 'zh' : 'en';
+    const evidenceText = buildSpeakerAttributionEvidence(structuredTranscript);
+    if (!evidenceText) {
+        return applySpeakerNameMap(structuredTranscript, speakerNameMap);
+    }
+
+    const metadataLines = [
+        options.podcastTitle ? `Podcast title: ${options.podcastTitle}` : '',
+        options.originalUrl ? `Source URL: ${options.originalUrl}` : '',
+        `Unresolved speaker labels: ${unresolvedSpeakers.join(', ')}`
+    ].filter(Boolean);
+    const evidenceCorpus = [
+        options.podcastTitle || '',
+        options.rawTranscript || '',
+        evidenceText
+    ].join('\n');
+    const prompt = transcriptLanguage === 'zh'
+        ? `你要做的唯一任务，是把已经完成 diarization 的通用说话人标签映射成真实人名。
+
+严格要求：
+1. 只能使用下面给出的标题、链接和转录证据，不能使用外部知识。
+2. 只有在人名明确出现在证据里时，才能映射为真实人名。
+3. 如果不确定，就返回 null，不要猜。
+4. 不要改写文本，不要输出解释。
+5. 只返回 JSON，格式必须是 {"speaker_map":{"Speaker 1":"张三","Speaker 2":null}}
+
+元信息：
+${metadataLines.join('\n')}
+
+转录证据：
+${evidenceText}`
+        : `Your only task is to map existing diarized generic speaker labels to real person names.
+
+Strict requirements:
+1. Use only the title, URL, and transcript evidence below. Do not use outside knowledge.
+2. Assign a real name only when that name is explicitly present in the evidence.
+3. If uncertain, return null for that speaker instead of guessing.
+4. Do not rewrite the transcript and do not add explanations.
+5. Return JSON only, in exactly this shape: {"speaker_map":{"Speaker 1":"Jane Doe","Speaker 2":null}}
+
+Metadata:
+${metadataLines.join('\n')}
+
+Transcript evidence:
+${evidenceText}`;
+
+    try {
+        const response = await getOpenAIClient().chat.completions.create({
+            model: AI_SPEAKER_MODEL,
+            messages: [
+                {
+                    role: 'system',
+                    content: transcriptLanguage === 'zh'
+                        ? '你是一个严格的 speaker name attribution 助手，只能输出 JSON 映射，不得猜测。'
+                        : 'You are a strict speaker-name attribution assistant. Return JSON only and never guess.'
+                },
+                {
+                    role: 'user',
+                    content: prompt
+                }
+            ],
+            temperature: 0,
+            max_tokens: 500
+        });
+
+        const content = String(response.choices?.[0]?.message?.content || '').trim();
+        const llmMap = parseSpeakerAttributionMap(content, unresolvedSpeakers, evidenceCorpus);
+        speakerNameMap = {
+            ...speakerNameMap,
+            ...llmMap
+        };
+    } catch (error) {
+        console.warn(`⚠️ 说话人命名归因失败，保留通用标签: ${error.message}`);
+    }
+
+    return applySpeakerNameMap(structuredTranscript, speakerNameMap);
+}
+
 function renderStructuredTranscript(structuredTranscript) {
     const segments = Array.isArray(structuredTranscript?.segments) ? structuredTranscript.segments : [];
 
@@ -1334,9 +1661,10 @@ async function finalizeTranscriptPipeline(rawTranscript, options = {}) {
     };
 
     const nativeStructuredTranscript = hasNativeStructuredTranscript(structuredTranscript) ? structuredTranscript : null;
+    let resolvedStructuredTranscript = nativeStructuredTranscript;
     const summarySourceTranscript = String(rawTranscript || '').trim();
-    let transcript = nativeStructuredTranscript
-        ? renderStructuredTranscript(nativeStructuredTranscript)
+    let transcript = resolvedStructuredTranscript
+        ? renderStructuredTranscript(resolvedStructuredTranscript)
         : summarySourceTranscript;
     const originalTranscript = summarySourceTranscript;
     const savedFiles = [];
@@ -1383,6 +1711,17 @@ async function finalizeTranscriptPipeline(rawTranscript, options = {}) {
         }
     } else {
         console.log('🎙️ 检测到真实 diarization 结果，跳过文本级说话人推断');
+        if (sessionId && sendProgressCallback) {
+            sendProgressCallback(sessionId, 56, 'speaker_naming', outputLanguage === 'zh' ? '识别说话人姓名' : 'Attributing speaker names');
+        }
+
+        resolvedStructuredTranscript = await attributeSpeakerNamesForStructuredTranscript(resolvedStructuredTranscript, {
+            transcriptLanguage: detectTranscriptLanguage(summarySourceTranscript || transcript, audioLanguage),
+            rawTranscript: summarySourceTranscript || transcript,
+            podcastTitle,
+            originalUrl
+        });
+        transcript = renderStructuredTranscript(resolvedStructuredTranscript);
     }
 
     if (outputContext) {
@@ -1407,7 +1746,7 @@ async function finalizeTranscriptPipeline(rawTranscript, options = {}) {
         }
     }
 
-    const analysisTranscript = nativeStructuredTranscript ? (summarySourceTranscript || transcript) : transcript;
+    const analysisTranscript = transcript;
 
     if (shouldSummarize) {
         if (sessionId && sendProgressCallback) {
@@ -1456,7 +1795,7 @@ async function finalizeTranscriptPipeline(rawTranscript, options = {}) {
         detectedLanguage: normalizedDetectedLanguage,
         audioDuration,
         savedFiles,
-        structuredTranscript: nativeStructuredTranscript || buildStructuredTranscript(transcript, audioDuration)
+        structuredTranscript: resolvedStructuredTranscript || buildStructuredTranscript(transcript, audioDuration)
     };
 }
 
@@ -3145,6 +3484,7 @@ module.exports = {
     buildStructuredTranscriptFromSegments,
     renderStructuredTranscript,
     hasNativeStructuredTranscript,
+    attributeSpeakerNamesForStructuredTranscript,
     formatTranscriptAsMarkdown,
     normalizeTranscriptSpeakerLabels,
     formatTranscriptText,
