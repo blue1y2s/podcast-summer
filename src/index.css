@@ -15,7 +15,7 @@
 
   body {
     @apply bg-base-200 text-base-content antialiased;
-    background-image: linear-gradient(180deg, #f5f3f7 0%, #efecf2 100%);
+    background: #efecf2;
     overflow-x: hidden;
     overflow-y: auto;
   }
@@ -46,7 +46,7 @@
 
   .control-card {
     @apply surface-card border-neutral bg-neutral text-neutral-content;
-    background-image: linear-gradient(180deg, #431545 0%, #311233 100%);
+    background: #3f0f40;
   }
 
   .card-body-tight {
@@ -98,7 +98,16 @@
   }
 
   .toolbar-actions {
-    @apply flex items-center gap-2;
+    @apply flex items-center gap-3;
+  }
+
+  .toolbar-action-cluster {
+    @apply flex items-center gap-2 rounded-[18px] border px-2 py-2;
+    border-color: rgba(29, 28, 29, 0.08);
+    background: rgba(248, 248, 248, 0.92);
+    box-shadow:
+      0 12px 24px rgba(29, 28, 29, 0.06),
+      inset 0 1px 0 rgba(255, 255, 255, 0.72);
   }
 
   .toolbar-title {
@@ -153,18 +162,59 @@
     @apply textarea textarea-bordered min-h-[96px] w-full rounded-2xl border-white/10 bg-white/5 text-neutral-content placeholder:text-neutral-content;
   }
 
+  .sidebar-form {
+    @apply flex h-full min-h-0 flex-col gap-4 overflow-hidden;
+  }
+
+  .sidebar-stack {
+    @apply flex min-h-0 flex-1 flex-col overflow-hidden;
+  }
+
   .sidebar-scroll-pane {
     @apply flex-1 min-h-0 space-y-4 overflow-y-auto pr-1;
   }
 
+  .sidebar-helper-text {
+    @apply text-xs leading-6 text-neutral-content;
+    opacity: 0.76;
+  }
+
+  .sidebar-resizer {
+    @apply relative flex h-5 shrink-0 cursor-row-resize items-center justify-center;
+    touch-action: none;
+  }
+
+  .sidebar-resizer-line {
+    @apply pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2;
+    background: rgba(255, 255, 255, 0.14);
+  }
+
+  .sidebar-resizer-handle {
+    @apply relative z-10 h-2 w-12 rounded-full border transition;
+    background: rgba(255, 255, 255, 0.14);
+    border-color: rgba(255, 255, 255, 0.12);
+    box-shadow: 0 10px 24px rgba(14, 6, 18, 0.22);
+  }
+
+  .sidebar-resizer:hover .sidebar-resizer-handle,
+  .sidebar-resizer:focus-visible .sidebar-resizer-handle,
+  .sidebar-resizer-active .sidebar-resizer-handle {
+    background: rgba(255, 255, 255, 0.22);
+    border-color: rgba(255, 255, 255, 0.2);
+  }
+
+  .sidebar-resizer:focus-visible {
+    outline: none;
+  }
+
   .sidebar-history-dock {
-    @apply min-h-0 border-t border-white/10 pt-4;
+    @apply min-h-0 pt-4;
     max-height: 18rem;
   }
 
   .sidebar-history-shell {
     @apply flex h-full min-h-0 flex-col overflow-hidden rounded-[18px] border border-white/10 px-3 py-3;
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.08) 0%, rgba(8, 3, 14, 0.18) 100%);
+    background: rgba(255, 255, 255, 0.08);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
   }
 
@@ -231,11 +281,17 @@
   }
 
   .history-card-dark {
-    @apply border-white/10 bg-white/5 hover:border-white/20 hover:bg-white/[0.08];
+    @apply border-white/10 bg-white/5;
+  }
+
+  .history-card-dark:hover {
+    border-color: rgba(255, 255, 255, 0.2);
+    background: rgba(255, 255, 255, 0.08);
   }
 
   .history-card-active-dark {
-    @apply border-white/20 bg-white/[0.14];
+    border-color: rgba(255, 255, 255, 0.2);
+    background: rgba(255, 255, 255, 0.14);
     box-shadow:
       inset 0 0 0 1px rgba(255, 255, 255, 0.05),
       0 0 0 1px rgba(97, 31, 105, 0.16);
@@ -405,9 +461,76 @@
     @apply whitespace-pre-wrap text-[15px] leading-8 text-base-content;
   }
 
-  .subtle-action {
-    @apply inline-flex w-fit items-center rounded-md px-2 py-1 text-xs font-medium text-base-content transition hover:bg-base-200 hover:text-base-content;
-    opacity: 0.68;
+  .workspace-action-button {
+    @apply inline-flex w-fit items-center gap-2 rounded-[14px] border px-2.5 py-2 text-sm font-semibold tracking-[-0.01em] text-base-content transition duration-200;
+    border-color: rgba(29, 28, 29, 0.12);
+    background: #ffffff;
+    box-shadow:
+      0 10px 20px rgba(29, 28, 29, 0.08),
+      inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  }
+
+  .workspace-action-button:hover {
+    border-color: rgba(97, 31, 105, 0.16);
+    background: #f8f8f8;
+    box-shadow:
+      0 14px 24px rgba(29, 28, 29, 0.1),
+      inset 0 1px 0 rgba(255, 255, 255, 0.94);
+    transform: translateY(-1px);
+  }
+
+  .workspace-action-button:active {
+    box-shadow:
+      0 8px 16px rgba(29, 28, 29, 0.08),
+      inset 0 1px 0 rgba(255, 255, 255, 0.88);
+    transform: translateY(0);
+  }
+
+  .workspace-action-button:focus-visible {
+    outline: 2px solid rgba(97, 31, 105, 0.18);
+    outline-offset: 2px;
+  }
+
+  .workspace-action-button-toolbar {
+    @apply pr-3.5;
+  }
+
+  .workspace-action-button-soft {
+    background: #f8f8f8;
+  }
+
+  .workspace-action-button-quiet {
+    @apply rounded-[10px] px-3 py-1.5 text-xs font-medium;
+    border-color: rgba(29, 28, 29, 0.08);
+    background: rgba(248, 248, 248, 0.92);
+    box-shadow: none;
+  }
+
+  .workspace-action-button-quiet:hover {
+    border-color: rgba(97, 31, 105, 0.16);
+    background: #f1eef4;
+    box-shadow: none;
+    transform: none;
+  }
+
+  .workspace-action-button-quiet:active {
+    box-shadow: none;
+    transform: none;
+  }
+
+  .workspace-action-icon {
+    @apply flex h-7 w-7 shrink-0 items-center justify-center rounded-full;
+    background: rgba(97, 31, 105, 0.1);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+    color: #611f69;
+  }
+
+  .workspace-action-icon svg {
+    @apply h-4 w-4;
+  }
+
+  .workspace-action-label {
+    @apply whitespace-nowrap;
   }
 
   .meta-chip-dark {
@@ -421,6 +544,10 @@
   .sidebar-language-switch {
     @apply inline-flex items-center rounded-md px-1.5 py-1 font-mono text-[11px] font-semibold tracking-[0.18em] text-neutral-content transition hover:bg-white/10;
     opacity: 0.76;
+  }
+
+  .sidebar-language-switch:hover {
+    background: rgba(255, 255, 255, 0.1);
   }
 
   @media (min-width: 1024px) {

@@ -4,7 +4,7 @@
 
 **中文 | [English](README.md)**
 
-![Podcast Transcriber Screenshot](public/screenshot_zh.png)
+![Podcast Summer 截图](public/screenshot_zh.png)
 
 ## 简介
 
@@ -23,7 +23,7 @@ cp .env.example .env
 npm start
 ```
 
-访问 `http://localhost:3000`。
+访问服务端打印出来的地址，通常是 `http://localhost:3000`。
 
 如果你想用最短路径先跑起来，直接从 `gemini_audio` 开始。
 
@@ -86,7 +86,11 @@ npm run dev
 npm run ui:dev
 npm run ui:build
 npm run ui:preview
+npm test
+npm run check
 ```
+
+`npm test` 会对 Express 应用运行一轮无需密钥的 smoke check。`npm run check` 会先重新构建 UI，再执行这轮 smoke check。
 
 `npm run desktop` 还在，但现在只是遗留包装层。
 

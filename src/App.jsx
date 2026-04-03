@@ -593,13 +593,21 @@ export default function App() {
               onDoubleClick={(event) => event.stopPropagation()}
             >
               {result && desktopState.isDesktop && desktopState.resultsRoot ? (
-                <button
-                  type="button"
-                  className="btn btn-sm btn-outline rounded-xl normal-case"
-                  onClick={handleReveal}
-                >
-                  {text.revealFile}
-                </button>
+                <div className="toolbar-action-cluster">
+                  <button
+                    type="button"
+                    className="workspace-action-button workspace-action-button-toolbar"
+                    onClick={handleReveal}
+                  >
+                    <span className="workspace-action-icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M3.75 7.5A1.75 1.75 0 0 1 5.5 5.75h4.06l1.66 1.85h7.28a1.75 1.75 0 0 1 1.75 1.75v7.15a1.75 1.75 0 0 1-1.75 1.75H5.5a1.75 1.75 0 0 1-1.75-1.75z" />
+                        <path d="M8.5 12.25h7" />
+                      </svg>
+                    </span>
+                    <span className="workspace-action-label">{text.revealFile}</span>
+                  </button>
+                </div>
               ) : null}
             </div>
           </header>

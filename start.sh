@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# 🎙️ Podcast提取器启动脚本 / Podcast Transcriber Startup Script
+# 🎙️ Podcast Summer 启动脚本 / Podcast Summer Startup Script
 
-echo "🎙️ 启动Podcast提取器... / Starting Podcast Transcriber..."
+echo "🎙️ 启动 Podcast Summer... / Starting Podcast Summer..."
 
 # 检查Node.js是否已安装
 if ! command -v node &> /dev/null; then
@@ -14,24 +14,43 @@ fi
 if [ ! -f .env ]; then
     echo "⚠️  .env文件不存在，正在创建... / .env file not found, creating..."
     cat > .env << EOL
-# Gemini / OpenAI兼容配置（用于 Gemini Audio、总结和翻译）
+# Gemini / OpenAI-compatible configuration (used for Gemini Audio, summary, translation)
 GEMINI_API_KEY=your_gemini_api_key_here
 GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+GEMINI_TRANSCRIBE_MODEL=gemini-3.1-flash-lite-preview
+GEMINI_TRANSCRIBE_FALLBACK_MODELS=gemini-2.5-flash
+GEMINI_FAST_MODEL=gemini-3.1-flash-lite-preview
+GEMINI_MODEL=gemini-3.1-flash-lite-preview
+GEMINI_SUMMARY_MODEL=gemini-3.1-pro-preview
 
-# Qwen3-ASR Toolkit 配置（用于 Qwen 云端转录）
+# DashScope ASR configuration
 DASHSCOPE_API_KEY=your_dashscope_api_key_here
-QWEN_ASR_COMMAND=qwen3-asr
+DASHSCOPE_API_ROOT=https://dashscope.aliyuncs.com
+QWEN3_ASR_MODEL=qwen3-asr-flash
+FUN_ASR_REALTIME_MODEL=fun-asr-realtime-2026-02-28
+FUN_ASR_FILE_MODEL=fun-asr
 
-# 本地 Whisper 配置（离线/兜底）
+# Local Whisper configuration (offline / fallback)
 WHISPER_MODEL=medium
 WHISPER_DEVICE=cpu
 WHISPER_COMPUTE_TYPE=int8
 
-# 服务器配置 / Server Configuration
+# WhisperX + pyannote configuration (true speaker diarization)
+WHISPERX_MODEL=./models/faster-whisper-large-v3
+WHISPERX_DEVICE=cpu
+WHISPERX_COMPUTE_TYPE=int8
+WHISPERX_MODEL_DIR=./models
+PYANNOTE_TOKEN=your_huggingface_or_pyannote_token_here
+PYANNOTE_DIARIZATION_MODEL=pyannote/speaker-diarization-community-1
+# Optional
+# WHISPER_PYTHON_BIN=./venv/bin/python
+
+# Server configuration
 PORT=3000
 
-# 支持的最大文件大小 (MB) / Max file size (MB)
-MAX_FILE_SIZE=50
+# Optional: legacy audio processing limits
+MAX_SEGMENT_SIZE_MB=25
+SEGMENT_DURATION_SECONDS=600
 EOL
     echo "📝 请编辑 .env 文件，至少配置一种可用 ASR 后端 / Please edit .env and configure at least one ASR backend"
     echo "📖 Gemini API Key: https://aistudio.google.com/app/apikey"
@@ -46,9 +65,9 @@ if [ ! -d "node_modules" ]; then
 fi
 
 # 启动服务器
-echo "🚀 启动服务器... / Starting server..."
-echo "🌐 访问地址 / Access URL: http://localhost:3000"
+echo "🚀 构建并启动应用... / Building UI and starting server..."
+echo "🌐 访问地址 / Access URL: check the URL printed by the server (usually http://localhost:3000)"
 echo "🛑 按 Ctrl+C 停止服务器 / Press Ctrl+C to stop server"
-echo "🧠 可选 ASR 后端 / Available ASR backends: auto, qwen_asr, gemini_audio, whisper_local"
+echo "🧠 可选 ASR 后端 / Available ASR backends: auto, fun_asr_file_diarization, qwen3_asr, gemini_audio, fun_asr_realtime, whisperx_local, whisper_local"
 
 npm start

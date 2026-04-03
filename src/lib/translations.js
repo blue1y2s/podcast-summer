@@ -1,7 +1,7 @@
 export const translations = {
   zh: {
-    title: 'Podcast 提取器',
-    subtitle: '输入链接或音频文件，直接查看转录结果。',
+    title: 'Podcast Summer',
+    subtitle: '输入链接或音频文件，直接在工作区查看结果。',
     controlLabel: 'Input',
     controlTitle: 'Run transcript',
     sourceLabel: '内容来源',
@@ -84,8 +84,8 @@ export const translations = {
     genericError: '处理过程中出现错误'
   },
   en: {
-    title: 'Podcast Transcriber',
-    subtitle: 'Paste a link or drop an audio file, then read the transcript here.',
+    title: 'Podcast Summer',
+    subtitle: 'Paste a link or drop an audio file, then work through the transcript here.',
     controlLabel: 'Input',
     controlTitle: 'Run transcript',
     sourceLabel: 'Source',

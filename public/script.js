@@ -1,7 +1,7 @@
 // 双语内容配置
 const translations = {
     zh: {
-        title: "Podcast提取器",
+        title: "Podcast Summer",
         subtitle: "输入链接或音频文件，直接查看转录结果。",
         sourceLabel: "内容来源",
         sourceUrlTitle: "播客链接",
@@ -66,7 +66,7 @@ const translations = {
         langText: "中文"
     },
     en: {
-        title: "Podcast Transcriber",
+        title: "Podcast Summer",
         subtitle: "Paste a link or drop an audio file, then read the transcript here.",
         sourceLabel: "Source",
         sourceUrlTitle: "Podcast link",

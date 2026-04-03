@@ -4,7 +4,7 @@ Web-first podcast transcription and summarization.
 
 **English | [中文](README_zh.md)**
 
-![Podcast Transcriber Screenshot](public/screenshot_en.png)
+![Podcast Summer screenshot](public/screenshot_en.png)
 
 ## Overview
 
@@ -23,7 +23,7 @@ cp .env.example .env
 npm start
 ```
 
-Open `http://localhost:3000`.
+Open the URL printed by the server, usually `http://localhost:3000`.
 
 If you want the shortest path to a working setup, start with `gemini_audio`.
 
@@ -86,7 +86,11 @@ npm run dev
 npm run ui:dev
 npm run ui:build
 npm run ui:preview
+npm test
+npm run check
 ```
+
+`npm test` runs a no-secrets smoke check against the running Express app. `npm run check` rebuilds the UI and then runs the smoke check.
 
 `npm run desktop` still exists, but it is legacy packaging.
 
