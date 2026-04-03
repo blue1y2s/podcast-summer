@@ -1190,24 +1190,24 @@ app.use((req, res) => {
 // 启动服务器（简化版端口处理）
 function startServer() {
     const server = app.listen(DEFAULT_PORT, () => {
-        console.log(`🎙️ Podcast提取器服务器运行在 http://localhost:${DEFAULT_PORT}`);
-        console.log(`🎙️ Podcast Transcriber server running on http://localhost:${DEFAULT_PORT}`);
+        console.log(`🎙️ Podcast Summer 服务器运行在 http://localhost:${DEFAULT_PORT}`);
+        console.log(`🎙️ Podcast Summer server running on http://localhost:${DEFAULT_PORT}`);
     });
 
     server.on('error', (err) => {
         if (err.code === 'EADDRINUSE') {
             console.log(`端口 ${DEFAULT_PORT} 被占用，尝试端口 ${DEFAULT_PORT + 1}...`);
             const altServer = app.listen(DEFAULT_PORT + 1, () => {
-                console.log(`🎙️ Podcast提取器服务器运行在 http://localhost:${DEFAULT_PORT + 1}`);
-                console.log(`🎙️ Podcast Transcriber server running on http://localhost:${DEFAULT_PORT + 1}`);
+                console.log(`🎙️ Podcast Summer 服务器运行在 http://localhost:${DEFAULT_PORT + 1}`);
+                console.log(`🎙️ Podcast Summer server running on http://localhost:${DEFAULT_PORT + 1}`);
             });
             
             altServer.on('error', (altErr) => {
                 if (altErr.code === 'EADDRINUSE') {
                     console.log(`端口 ${DEFAULT_PORT + 1} 也被占用，尝试端口 ${DEFAULT_PORT + 2}...`);
                     app.listen(DEFAULT_PORT + 2, () => {
-                        console.log(`🎙️ Podcast提取器服务器运行在 http://localhost:${DEFAULT_PORT + 2}`);
-                        console.log(`🎙️ Podcast Transcriber server running on http://localhost:${DEFAULT_PORT + 2}`);
+                        console.log(`🎙️ Podcast Summer 服务器运行在 http://localhost:${DEFAULT_PORT + 2}`);
+                        console.log(`🎙️ Podcast Summer server running on http://localhost:${DEFAULT_PORT + 2}`);
                     });
                 } else {
                     console.error('启动服务器失败:', altErr);

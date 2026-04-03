@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "🎙️ 播客提取器快速启动脚本"
+echo "🎙️ Podcast Summer 快速启动脚本"
 echo "================================"
 
 # 检查Node.js环境
@@ -39,8 +39,8 @@ if lsof -ti:$PORT > /dev/null 2>&1; then
 fi
 
 # 启动服务器
-echo "🚀 启动服务器..."
-echo "🌐 服务启动后访问: http://localhost:端口号"
+echo "🚀 构建并启动 Podcast Summer..."
+echo "🌐 服务启动后访问日志里打印的地址（通常是 http://localhost:3000）"
 echo "🛑 按 Ctrl+C 停止服务器"
 echo "================================"
 

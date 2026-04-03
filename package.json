@@ -1,15 +1,18 @@
 {
-  "name": "podcast-extractor",
+  "name": "podcast-summer",
   "version": "1.0.0",
-  "description": "双语播客提取器 - Bilingual Podcast Transcriber & Summarizer",
+  "description": "Podcast Summer - Web-first podcast transcription and summarization",
   "main": "electron/main.js",
   "scripts": {
-    "start": "node server/index.js",
+    "start": "npm run ui:build && npm run start:server",
+    "start:server": "node server/index.js",
     "dev": "nodemon server/index.js",
     "client": "vite",
     "ui:dev": "vite",
     "ui:build": "vite build",
     "ui:preview": "vite preview",
+    "test": "node scripts/smoke-check.mjs",
+    "check": "npm run ui:build && npm test",
     "desktop": "npm run ui:build && electron electron/main.js"
   },
   "keywords": [

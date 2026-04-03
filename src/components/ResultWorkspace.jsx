@@ -161,8 +161,8 @@ export function ResultWorkspace({
             ))}
           </div>
           <div className="shrink-0 sm:self-end">
-            <button type="button" className="subtle-action" onClick={onCopy}>
-              {text.copyCurrent}
+            <button type="button" className="workspace-action-button workspace-action-button-quiet" onClick={onCopy}>
+              <span className="workspace-action-label">{text.copyCurrent}</span>
             </button>
           </div>
         </div>

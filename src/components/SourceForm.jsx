@@ -226,184 +226,186 @@ export function SourceForm({
 
         <form className="sidebar-form" onSubmit={onSubmit}>
           <div ref={layoutRef} className="sidebar-stack">
-            <section className="sidebar-block space-y-3">
-              <label className="eyebrow-inverse">{text.sourceLabel}</label>
-              <SegmentedControl
-                name="sourceMode"
-                value={sourceMode}
-                options={sourceOptions}
-                onChange={onSourceModeChange}
-                tone="dark"
-              />
-            </section>
-
-            {sourceMode === 'url' ? (
+            <div className="sidebar-scroll-pane">
               <section className="sidebar-block space-y-3">
-                <label className="eyebrow-inverse" htmlFor="podcast-url">
-                  {text.urlLabel}
-                </label>
-                <input
-                  id="podcast-url"
-                  type="url"
-                  className={inputThemeClass}
-                  placeholder={text.urlPlaceholder}
-                  value={form.url}
-                  onChange={(event) => onFormChange('url', event.target.value)}
-                  required
-                />
-                <p className={helperTextClass}>{text.urlHelper}</p>
-              </section>
-            ) : (
-              <section className="sidebar-block space-y-3">
-                <label className="eyebrow-inverse">{text.fileLabel}</label>
-                <FilePicker
-                  text={text}
-                  selectedFile={selectedFile}
-                  onSelectFile={onFileSelect}
-                  onClearFile={onFileClear}
-                />
-              </section>
-            )}
-
-            <section className="sidebar-block space-y-3">
-              <label className="eyebrow-inverse">{text.operationLabel}</label>
-              <SegmentedControl
-                name="operation"
-                value={form.operation}
-                options={operationOptions}
-                onChange={(value) => onFormChange('operation', value)}
-                tone="dark"
-              />
-            </section>
-
-            <section className="sidebar-block grid gap-4 sm:grid-cols-2">
-              <div className="space-y-3 sm:col-span-2">
-                <label className="eyebrow-inverse" htmlFor="asr-backend">
-                  {text.asrBackend}
-                </label>
-                <select
-                  id="asr-backend"
-                  className={selectThemeClass}
-                  value={form.asrBackend}
-                  onChange={(event) => onFormChange('asrBackend', event.target.value)}
-                >
-                  {visibleAsrBackendOptions.map((option) => (
-                    <option key={option.value} value={option.value} disabled={option.disabled}>
-                      {option[text.langKey]}
-                    </option>
-                  ))}
-                </select>
-                {sourceMode === 'file' ? (
-                  <p className={helperTextClass}>{text.asrBackendFileHint}</p>
-                ) : null}
-              </div>
-
-              <div className="space-y-3">
-                <label className="eyebrow-inverse" htmlFor="audio-language">
-                  {text.audioLanguage}
-                </label>
-                <select
-                  id="audio-language"
-                  className={selectThemeClass}
-                  value={form.audioLanguage}
-                  onChange={(event) => onFormChange('audioLanguage', event.target.value)}
-                >
-                  {languageOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option[text.langKey]}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="space-y-3">
-                <label className="eyebrow-inverse" htmlFor="output-language">
-                  {text.outputLanguage}
-                </label>
-                <select
-                  id="output-language"
-                  className={selectThemeClass}
-                  value={form.outputLanguage}
-                  onChange={(event) => onFormChange('outputLanguage', event.target.value)}
-                >
-                  {outputLanguageOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option[text.langKey]}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </section>
-
-            <section className="sidebar-block space-y-3">
-              <label className="eyebrow-inverse" htmlFor="hotwords">
-                {text.hotwords}
-              </label>
-              <textarea
-                id="hotwords"
-                className={inputThemeClass}
-                rows={3}
-                placeholder={text.hotwordsPlaceholder}
-                value={form.hotwords}
-                onChange={(event) => onFormChange('hotwords', event.target.value)}
-              />
-              <p className={helperTextClass}>{text.hotwordsHint}</p>
-            </section>
-
-            <section className="sidebar-block space-y-3">
-              <label className="eyebrow-inverse" htmlFor="transcription-context">
-                {text.transcriptionContext}
-              </label>
-              <textarea
-                id="transcription-context"
-                className={inputThemeClass}
-                rows={3}
-                placeholder={text.transcriptionContextPlaceholder}
-                value={form.transcriptionContext}
-                onChange={(event) => onFormChange('transcriptionContext', event.target.value)}
-              />
-              <p className={helperTextClass}>{text.transcriptionContextHint}</p>
-            </section>
-          </div>
-
-          {hasHistory ? (
-            <>
-              <div
-                className={`sidebar-resizer ${isResizingHistory ? 'sidebar-resizer-active' : ''}`}
-                role="separator"
-                aria-orientation="horizontal"
-                aria-label={text.historyLabel}
-                tabIndex={0}
-                onPointerDown={handleHistoryResizeStart}
-                onKeyDown={handleHistoryResizeKeyDown}
-              >
-                <span className="sidebar-resizer-line" aria-hidden="true" />
-                <span className="sidebar-resizer-handle" aria-hidden="true" />
-              </div>
-
-              <div
-                className="sidebar-history-dock"
-                style={{
-                  flexBasis: `${historyDockHeight}px`,
-                  maxHeight: 'none'
-                }}
-              >
-              <div className="sidebar-history-shell">
-                <HistoryStrip
-                  text={text}
-                  items={historyItems}
-                  activeHistoryId={activeHistoryId}
-                  onSelect={onHistorySelect}
-                  onDelete={onHistoryDelete}
-                  disabled={isBusy}
-                  locale={text.langKey === 'zh' ? 'zh-CN' : 'en-US'}
-                  layout="stack"
+                <label className="eyebrow-inverse">{text.sourceLabel}</label>
+                <SegmentedControl
+                  name="sourceMode"
+                  value={sourceMode}
+                  options={sourceOptions}
+                  onChange={onSourceModeChange}
                   tone="dark"
                 />
-              </div>
-              </div>
-            </>
-          ) : null}
+              </section>
+
+              {sourceMode === 'url' ? (
+                <section className="sidebar-block space-y-3">
+                  <label className="eyebrow-inverse" htmlFor="podcast-url">
+                    {text.urlLabel}
+                  </label>
+                  <input
+                    id="podcast-url"
+                    type="url"
+                    className={inputThemeClass}
+                    placeholder={text.urlPlaceholder}
+                    value={form.url}
+                    onChange={(event) => onFormChange('url', event.target.value)}
+                    required
+                  />
+                  <p className={helperTextClass}>{text.urlHelper}</p>
+                </section>
+              ) : (
+                <section className="sidebar-block space-y-3">
+                  <label className="eyebrow-inverse">{text.fileLabel}</label>
+                  <FilePicker
+                    text={text}
+                    selectedFile={selectedFile}
+                    onSelectFile={onFileSelect}
+                    onClearFile={onFileClear}
+                  />
+                </section>
+              )}
+
+              <section className="sidebar-block space-y-3">
+                <label className="eyebrow-inverse">{text.operationLabel}</label>
+                <SegmentedControl
+                  name="operation"
+                  value={form.operation}
+                  options={operationOptions}
+                  onChange={(value) => onFormChange('operation', value)}
+                  tone="dark"
+                />
+              </section>
+
+              <section className="sidebar-block grid gap-4 sm:grid-cols-2">
+                <div className="space-y-3 sm:col-span-2">
+                  <label className="eyebrow-inverse" htmlFor="asr-backend">
+                    {text.asrBackend}
+                  </label>
+                  <select
+                    id="asr-backend"
+                    className={selectThemeClass}
+                    value={form.asrBackend}
+                    onChange={(event) => onFormChange('asrBackend', event.target.value)}
+                  >
+                    {visibleAsrBackendOptions.map((option) => (
+                      <option key={option.value} value={option.value} disabled={option.disabled}>
+                        {option[text.langKey]}
+                      </option>
+                    ))}
+                  </select>
+                  {sourceMode === 'file' ? (
+                    <p className={helperTextClass}>{text.asrBackendFileHint}</p>
+                  ) : null}
+                </div>
+
+                <div className="space-y-3">
+                  <label className="eyebrow-inverse" htmlFor="audio-language">
+                    {text.audioLanguage}
+                  </label>
+                  <select
+                    id="audio-language"
+                    className={selectThemeClass}
+                    value={form.audioLanguage}
+                    onChange={(event) => onFormChange('audioLanguage', event.target.value)}
+                  >
+                    {languageOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option[text.langKey]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-3">
+                  <label className="eyebrow-inverse" htmlFor="output-language">
+                    {text.outputLanguage}
+                  </label>
+                  <select
+                    id="output-language"
+                    className={selectThemeClass}
+                    value={form.outputLanguage}
+                    onChange={(event) => onFormChange('outputLanguage', event.target.value)}
+                  >
+                    {outputLanguageOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option[text.langKey]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </section>
+
+              <section className="sidebar-block space-y-3">
+                <label className="eyebrow-inverse" htmlFor="hotwords">
+                  {text.hotwords}
+                </label>
+                <textarea
+                  id="hotwords"
+                  className={inputThemeClass}
+                  rows={3}
+                  placeholder={text.hotwordsPlaceholder}
+                  value={form.hotwords}
+                  onChange={(event) => onFormChange('hotwords', event.target.value)}
+                />
+                <p className={helperTextClass}>{text.hotwordsHint}</p>
+              </section>
+
+              <section className="sidebar-block space-y-3">
+                <label className="eyebrow-inverse" htmlFor="transcription-context">
+                  {text.transcriptionContext}
+                </label>
+                <textarea
+                  id="transcription-context"
+                  className={inputThemeClass}
+                  rows={3}
+                  placeholder={text.transcriptionContextPlaceholder}
+                  value={form.transcriptionContext}
+                  onChange={(event) => onFormChange('transcriptionContext', event.target.value)}
+                />
+                <p className={helperTextClass}>{text.transcriptionContextHint}</p>
+              </section>
+            </div>
+
+            {hasHistory ? (
+              <>
+                <div
+                  className={`sidebar-resizer ${isResizingHistory ? 'sidebar-resizer-active' : ''}`}
+                  role="separator"
+                  aria-orientation="horizontal"
+                  aria-label={text.historyLabel}
+                  tabIndex={0}
+                  onPointerDown={handleHistoryResizeStart}
+                  onKeyDown={handleHistoryResizeKeyDown}
+                >
+                  <span className="sidebar-resizer-line" aria-hidden="true" />
+                  <span className="sidebar-resizer-handle" aria-hidden="true" />
+                </div>
+
+                <div
+                  className="sidebar-history-dock"
+                  style={{
+                    flexBasis: `${historyDockHeight}px`,
+                    maxHeight: 'none'
+                  }}
+                >
+                  <div className="sidebar-history-shell">
+                    <HistoryStrip
+                      text={text}
+                      items={historyItems}
+                      activeHistoryId={activeHistoryId}
+                      onSelect={onHistorySelect}
+                      onDelete={onHistoryDelete}
+                      disabled={isBusy}
+                      locale={text.langKey === 'zh' ? 'zh-CN' : 'en-US'}
+                      layout="stack"
+                      tone="dark"
+                    />
+                  </div>
+                </div>
+              </>
+            ) : null}
+          </div>
 
           <div className="sidebar-submit-row">
             <button
