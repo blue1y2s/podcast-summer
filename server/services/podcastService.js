@@ -2,7 +2,12 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
 const { parseRSSFeed, discoverRSSFromPage, getXiaoyuzhouRSS } = require('./rssParser');
+
+const execFileAsync = promisify(execFile);
+const YT_DLP_BIN = process.env.YT_DLP_BIN || 'yt-dlp';
 
 class PodcastSourceError extends Error {
     constructor(message, options = {}) {
@@ -54,6 +59,172 @@ function createUnsupportedPlatformError(platform) {
             platform
         }
     );
+}
+
+function getSupportedVideoPlatform(url) {
+    const hostname = getHostname(url);
+    if (!hostname) {
+        return null;
+    }
+
+    if (matchesHostname(hostname, ['youtube.com', 'youtu.be'])) {
+        return 'YouTube';
+    }
+
+    if (matchesHostname(hostname, ['bilibili.com', 'b23.tv'])) {
+        return 'Bilibili';
+    }
+
+    return null;
+}
+
+function isSupportedVideoUrl(url) {
+    return Boolean(getSupportedVideoPlatform(url));
+}
+
+function normalizeYtDlpDate(value) {
+    const text = String(value || '').trim();
+    if (!/^\d{8}$/.test(text)) {
+        return null;
+    }
+
+    return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`;
+}
+
+function sanitizeYtDlpPath(filePath, tempDir) {
+    const resolvedPath = path.resolve(filePath);
+    const resolvedTemp = `${path.resolve(tempDir)}${path.sep}`;
+
+    if (!resolvedPath.startsWith(resolvedTemp)) {
+        throw new Error('yt-dlp 返回了无效的输出路径');
+    }
+
+    return resolvedPath;
+}
+
+function parseYtDlpJson(stdout) {
+    const rawText = String(stdout || '').trim();
+    if (!rawText) {
+        throw new Error('yt-dlp 未返回视频元数据');
+    }
+
+    return JSON.parse(rawText);
+}
+
+function buildYtDlpError(error, fallbackMessage) {
+    const detail = String(error?.stderr || error?.stdout || error?.message || '').trim();
+    if (/ENOENT/.test(String(error?.message || ''))) {
+        return new Error('未找到 yt-dlp。请先安装 yt-dlp，或通过 YT_DLP_BIN 指定可执行文件路径。');
+    }
+
+    return new Error(detail ? `${fallbackMessage}: ${detail}` : fallbackMessage);
+}
+
+async function getVideoInfo(url) {
+    try {
+        const { stdout } = await execFileAsync(
+            YT_DLP_BIN,
+            [
+                '--dump-single-json',
+                '--no-playlist',
+                '--no-warnings',
+                '--socket-timeout',
+                '30',
+                url
+            ],
+            {
+                timeout: 60000,
+                maxBuffer: 20 * 1024 * 1024
+            }
+        );
+
+        const info = parseYtDlpJson(stdout);
+        return {
+            id: info.id || null,
+            title: info.title || info.fulltitle || 'Untitled Video',
+            description: info.description || '',
+            duration: Number.isFinite(Number(info.duration)) ? Number(info.duration) : null,
+            publishedAt: info.release_date || normalizeYtDlpDate(info.upload_date) || null,
+            webpageUrl: info.webpage_url || url,
+            uploader: info.uploader || info.channel || null,
+            platform: getSupportedVideoPlatform(url)
+        };
+    } catch (error) {
+        throw buildYtDlpError(error, '视频元数据解析失败');
+    }
+}
+
+async function downloadVideoAudio(url, existingInfo = null) {
+    const tempDir = path.join(__dirname, '../temp');
+    const runKey = `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const outputTemplate = path.join(tempDir, `video_${runKey}_%(id)s.%(ext)s`);
+
+    try {
+        if (!fs.existsSync(tempDir)) {
+            fs.mkdirSync(tempDir, { recursive: true });
+        }
+
+        const info = existingInfo || await getVideoInfo(url);
+        console.log(`处理${info.platform || '视频'}链接: ${info.title}`);
+
+        const { stdout } = await execFileAsync(
+            YT_DLP_BIN,
+            [
+                '--no-playlist',
+                '--no-warnings',
+                '--socket-timeout',
+                '30',
+                '-f',
+                'bestaudio/best',
+                '-P',
+                tempDir,
+                '-o',
+                outputTemplate,
+                '--print',
+                'after_move:filepath',
+                url
+            ],
+            {
+                timeout: 30 * 60 * 1000,
+                maxBuffer: 20 * 1024 * 1024
+            }
+        );
+
+        const downloadedPath = String(stdout || '')
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean)
+            .map((line) => sanitizeYtDlpPath(line, tempDir))
+            .find((candidate) => fs.existsSync(candidate));
+
+        if (!downloadedPath) {
+            throw new Error('yt-dlp 没有生成可用的音频文件');
+        }
+
+        const stats = fs.statSync(downloadedPath);
+        if (stats.size < 1024) {
+            fs.unlinkSync(downloadedPath);
+            throw new Error('下载的音频文件太小，可能需要登录 Cookie 或该视频不可访问');
+        }
+
+        return {
+            audioFilePath: downloadedPath,
+            audioUrl: info.webpageUrl || url,
+            title: info.title || 'Untitled Video',
+            description: info.description || '',
+            publishedAt: info.publishedAt || null,
+            duration: info.duration || null,
+            platform: info.platform || getSupportedVideoPlatform(url),
+            uploader: info.uploader || null
+        };
+    } catch (error) {
+        throw buildYtDlpError(error, '视频音频下载失败');
+    }
+}
+
+async function estimateVideoDuration(url) {
+    const info = await getVideoInfo(url);
+    return info.duration || null;
 }
 
 function decodeHtmlEntities(input) {
@@ -217,6 +388,10 @@ async function downloadPodcastAudio(url) {
     try {
         console.log(`开始处理播客链接: ${url}`);
 
+        if (isSupportedVideoUrl(url)) {
+            return await downloadVideoAudio(url);
+        }
+
         // 检测链接类型并获取音频URL和播客信息
         const extracted = await extractAudioUrl(url);
         const podcastInfo = typeof extracted === 'string'
@@ -280,11 +455,6 @@ async function extractAudioUrl(url) {
         // 小宇宙链接处理
         if (url.includes('xiaoyuzhoufm.com') || url.includes('小宇宙')) {
             return await extractXiaoyuzhouAudio(url);
-        }
-
-        const unsupportedPlatform = getUnsupportedVideoPlatform(url);
-        if (unsupportedPlatform) {
-            throw createUnsupportedPlatformError(unsupportedPlatform);
         }
 
         // 通用RSS/播客平台处理
@@ -859,5 +1029,8 @@ async function downloadAudioFile(audioUrl) {
 module.exports = {
     downloadPodcastAudio,
     extractAudioUrl,
-    downloadAudioFile
+    downloadAudioFile,
+    estimateVideoDuration,
+    getSupportedVideoPlatform,
+    isSupportedVideoUrl
 };

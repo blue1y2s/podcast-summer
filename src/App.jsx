@@ -156,6 +156,25 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    function handleMessage(event) {
+      if (event.data && event.data.type === 'SET_LANGUAGE') {
+        const lang = event.data.language;
+        if (lang === 'zh' || lang === 'en') {
+          setCurrentLang(lang);
+          setProgress((current) => ({
+            ...current,
+            label: translations[lang].loadingHint
+          }));
+        }
+      }
+    }
+    window.addEventListener('message', handleMessage);
+    return () => {
+      window.removeEventListener('message', handleMessage);
+    };
+  }, []);
+
+  useEffect(() => {
     let disposed = false;
 
     Promise.all([fetchLatestResult(), fetchHistory()])
@@ -333,6 +352,9 @@ export default function App() {
       ...current,
       label: translations[nextLang].loadingHint
     }));
+    if (typeof window !== 'undefined') {
+      window.parent.postMessage({ type: 'SET_LANGUAGE', language: nextLang }, '*');
+    }
   }
 
   function handleSourceModeChange(mode) {
@@ -381,8 +403,12 @@ export default function App() {
       payload.url = form.url.trim();
     }
 
+    const isStaticDemo = typeof window !== 'undefined' && (window.location.hostname.endsWith('github.io') || window.location.search.includes('mode=demo'));
+
     resetRunState();
-    openProgressConnection(sessionId);
+    if (!isStaticDemo) {
+      openProgressConnection(sessionId);
+    }
 
     try {
       let estimatedDuration = null;

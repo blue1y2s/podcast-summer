@@ -1,5 +1,4 @@
 const OpenAI = require('openai');
-const { GoogleGenAI, createUserContent, createPartFromUri } = require('@google/genai');
 const fs = require('fs');
 const path = require('path');
 const { exec, execFile } = require('child_process');
@@ -1102,9 +1101,14 @@ const GEMINI_TRANSCRIBE_FALLBACK_MODELS = (process.env.GEMINI_TRANSCRIBE_FALLBAC
 const GEMINI_TRANSCRIBE_MODEL_CHAIN = [...new Set([GEMINI_TRANSCRIBE_MODEL, ...GEMINI_TRANSCRIBE_FALLBACK_MODELS])];
 const SUPPORTED_ASR_BACKENDS = ['auto', 'fun_asr_file_diarization', 'qwen3_asr', 'gemini_audio', 'fun_asr_realtime', 'whisperx_local', 'whisper_local'];
 const ASR_AUTO_BACKEND_ORDER = ['fun_asr_file_diarization', 'qwen3_asr', 'gemini_audio', 'fun_asr_realtime', 'whisperx_local', 'whisper_local'];
+const QWEN3_ASR_TIMEOUT_MS = Math.max(
+    60_000,
+    Number.parseInt(process.env.QWEN3_ASR_TIMEOUT_MS || String(10 * 60 * 1000), 10) || 10 * 60 * 1000
+);
 const commandAvailabilityCache = new Map();
 let openaiClient = null;
 let geminiClient = null;
+let googleGenAiModule = null;
 
 console.log(`🎤 ASR 后端支持: ${SUPPORTED_ASR_BACKENDS.join(', ')}`);
 console.log(`🤖 AI兼容接口: ${AI_BASE_URL}`);
@@ -1140,10 +1144,19 @@ function getGeminiClient() {
     }
 
     if (!geminiClient) {
+        const { GoogleGenAI } = getGoogleGenAiModule();
         geminiClient = new GoogleGenAI({ apiKey: AI_API_KEY });
     }
 
     return geminiClient;
+}
+
+function getGoogleGenAiModule() {
+    if (!googleGenAiModule) {
+        googleGenAiModule = require('@google/genai');
+    }
+
+    return googleGenAiModule;
 }
 
 function isTransientGeminiError(error) {
@@ -1234,6 +1247,12 @@ async function isCommandAvailable(command) {
 async function getBackendAvailability(backend, transcriptionOptions = {}) {
     switch (backend) {
         case 'qwen3_asr':
+            if (transcriptionOptions.sourcePlatform) {
+                return {
+                    available: false,
+                    reason: `${transcriptionOptions.sourcePlatform} 视频来源跳过 Qwen3-ASR，避免本地 VAD/torch 初始化卡住`
+                };
+            }
             if (!process.env.DASHSCOPE_API_KEY) {
                 return { available: false, reason: '缺少 DASHSCOPE_API_KEY' };
             }
@@ -1455,7 +1474,7 @@ async function transcribeAudioWithQwen3Asr(audioPath, language = null, transcrip
     let stdout;
     try {
         ({ stdout } = await execFileAsync(pythonBin, args, {
-            timeout: 2 * 60 * 60 * 1000,
+            timeout: QWEN3_ASR_TIMEOUT_MS,
             maxBuffer: 1024 * 1024 * 40,
             env: {
                 ...process.env,
@@ -1996,6 +2015,7 @@ async function transcribeAudioWithGemini(
                     console.log(`🔄 Gemini 转录降级到模型: ${modelName}`);
                 }
 
+                const { createUserContent, createPartFromUri } = getGoogleGenAiModule();
                 const response = await getGeminiClient().models.generateContent({
                     model: modelName,
                     contents: createUserContent([

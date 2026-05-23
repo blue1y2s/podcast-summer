@@ -8,7 +8,7 @@
 
 ## 简介
 
-Podcast Summer 可以把播客链接或本地音频处理成 transcript、summary，以及按需生成的 translation。
+Podcast Summer 可以把播客链接、B 站/YouTube 视频链接，或本地音频处理成 transcript、summary，以及按需生成的 translation。
 
 当前主路径是 Web 应用。Electron 仍然保留，但只是遗留壳层，不是主动维护的主要界面。
 
@@ -25,12 +25,14 @@ npm start
 
 访问服务端打印出来的地址，通常是 `http://localhost:3000`。
 
+如需处理 B 站或 YouTube 链接，请确保本机已安装 `yt-dlp`；如果可执行文件不在 PATH 中，可通过 `YT_DLP_BIN=/path/to/yt-dlp` 指定。
+
 如果你想用最短路径先跑起来，直接从 `gemini_audio` 开始。
 
 ## 处理流程概览
 
-1. 输入播客链接，或上传本地音频文件。
-2. 服务端解析链接或接收上传的音频。
+1. 输入播客链接、B 站/YouTube 视频链接，或上传本地音频文件。
+2. 服务端解析链接或接收上传的音频；视频链接会通过 `yt-dlp` 提取音频流。
 3. 所选 ASR backend 生成原始 transcript。
 4. 转录后处理流程负责整理格式、细化说话人轮次、生成 summary，以及按需生成 translation。
 5. 输出文件写入 `results/transcriptions`，本地历史快照保存在 `server/temp`。

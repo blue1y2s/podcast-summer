@@ -8,7 +8,7 @@ Web-first podcast transcription and summarization.
 
 ## Overview
 
-Podcast Summer turns podcast links or uploaded audio files into a transcript, a summary, and an optional translation.
+Podcast Summer turns podcast links, Bilibili/YouTube video links, or uploaded audio files into a transcript, a summary, and an optional translation.
 
 The main path is the web app. Electron still exists as a legacy wrapper, but it is not the actively maintained surface.
 
@@ -25,12 +25,14 @@ npm start
 
 Open the URL printed by the server, usually `http://localhost:3000`.
 
+To process Bilibili or YouTube links, make sure `yt-dlp` is installed locally. If it is not on PATH, set `YT_DLP_BIN=/path/to/yt-dlp`.
+
 If you want the shortest path to a working setup, start with `gemini_audio`.
 
 ## Processing Flow
 
-1. Provide a podcast link or upload a local audio file.
-2. The server resolves or receives the audio source.
+1. Provide a podcast link, a Bilibili/YouTube video link, or upload a local audio file.
+2. The server resolves or receives the audio source; video links use `yt-dlp` to extract an audio stream.
 3. The selected ASR backend generates the raw transcript.
 4. The transcript pipeline refines formatting, speaker turns, summary, and optional translation.
 5. Output files are written to `results/transcriptions`, and local history snapshots are stored under `server/temp`.

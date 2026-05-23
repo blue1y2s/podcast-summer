@@ -16,7 +16,7 @@ const {
     formatTranscriptAsMarkdown,
     normalizeTranscriptSpeakerLabels
 } = require('./services/openaiService');
-const { downloadPodcastAudio } = require('./services/podcastService');
+const { downloadPodcastAudio, estimateVideoDuration, isSupportedVideoUrl } = require('./services/podcastService');
 const { getAudioFiles, estimateAudioDuration } = require('./services/audioInfoService');
 const {
     RESULTS_ROOT,
@@ -716,6 +716,13 @@ app.post('/api/process-podcast', async (req, res) => {
             });
         }
 
+        if (isSupportedVideoUrl(url) && normalizedAsrBackend === 'fun_asr_file_diarization') {
+            return res.status(400).json({
+                success: false,
+                error: 'Fun-ASR 文件分离只支持公网音频直链；B 站/YouTube 视频请使用 auto、Gemini、Qwen3、Fun-ASR 实时或本地 Whisper 后端。'
+            });
+        }
+
         // 步骤1: 下载音频文件
         console.log('下载音频文件...');
         if (sessionId) {
@@ -773,7 +780,8 @@ app.post('/api/process-podcast', async (req, res) => {
                 asrBackend: normalizedAsrBackend,
                 hotwords,
                 transcriptionContext,
-                sourceAudioUrl: podcastInfo.audioUrl || null
+                sourcePlatform: podcastInfo.platform || null,
+                sourceAudioUrl: podcastInfo.platform ? null : podcastInfo.audioUrl || null
             }
         );
 
@@ -796,10 +804,11 @@ app.post('/api/process-podcast', async (req, res) => {
             ...result,
             podcastTitle: podcastTitle,
             estimatedDuration: estimatedDuration,
-            actualDuration: result.audioDuration || result.duration,
+            actualDuration: result.audioDuration || result.duration || podcastInfo.duration || null,
             savedFiles: savedFiles,
             sourceMode: 'url',
             sourceUrl: url,
+            sourcePlatform: podcastInfo.platform || null,
             publishedAt: podcastInfo.publishedAt || null
         };
 
@@ -1115,6 +1124,17 @@ app.post('/api/estimate-duration', async (req, res) => {
         }
 
         console.log(`🔍 轻量级预估音频时长: ${url}`);
+
+        if (isSupportedVideoUrl(url)) {
+            const videoDuration = await estimateVideoDuration(url);
+            if (videoDuration) {
+                console.log(`📊 视频元数据时长: ${Math.round(videoDuration / 60)} 分钟`);
+                return res.json({
+                    success: true,
+                    estimatedDuration: videoDuration
+                });
+            }
+        }
         
         // 使用 HEAD 请求获取文件大小，不下载完整文件
         const headResponse = await axios.head(url, {
