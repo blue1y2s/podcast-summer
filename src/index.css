@@ -626,4 +626,20 @@
   .progress-bar {
     @apply h-full rounded-full bg-primary transition-[width] duration-500 ease-out;
   }
+
+  .textarea-purple-white {
+    @apply textarea textarea-bordered w-full rounded-2xl border-white/20 bg-white/90 !important;
+    color: #1e293b !important;
+    resize: none !important;
+    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.06) !important;
+  }
+  .textarea-purple-white::placeholder {
+    color: #94a3b8 !important;
+  }
+  .textarea-purple-white:focus {
+    @apply border-primary ring-1 ring-primary !important;
+    background: #ffffff !important;
+    color: #0f172a !important;
+    outline: none !important;
+  }
 }

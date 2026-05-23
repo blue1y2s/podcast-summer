@@ -67,6 +67,12 @@ export function SourceForm({
   const selectThemeClass = 'surface-select-dark';
   const inputThemeClass = 'surface-input-dark';
   const helperTextClass = 'sidebar-helper-text';
+
+  function handleFillExample() {
+    onFormChange('url', 'https://pub-db1efdf4e28646b9a896d8e2cb76466f.r2.dev/test.mp3');
+    onFormChange('hotwords', currentLang === 'zh' ? '小宇宙, 播客, WhisperX, Fun-ASR, 说话人分离' : 'Xiaoyuzhou, Podcast, WhisperX, Fun-ASR, Speaker Diarization');
+    onFormChange('transcriptionContext', currentLang === 'zh' ? '本期播客讨论了AI语音识别技术的发展，对比了本地WhisperX和Fun-ASR的性能表现与说话人分离效果。' : 'This episode discusses the development of AI speech recognition technology, comparing the performance and speaker diarization of local WhisperX and Fun-ASR.');
+  }
   const visibleAsrBackendOptions = asrBackendOptions.map((option) => ({
     ...option,
     disabled: sourceMode === 'file' && urlOnlyAsrBackends.has(option.value)
@@ -211,13 +217,22 @@ export function SourceForm({
         <div className={`space-y-3 border-b border-white/10 pb-4 ${isDesktop ? 'window-drag-region' : ''}`}>
           <div className="flex items-center justify-between gap-3">
             <p className="eyebrow-inverse">{text.controlLabel}</p>
-            <button
-              type="button"
-              className={`sidebar-language-switch ${isDesktop ? 'window-no-drag' : ''}`}
-              onClick={onLanguageToggle}
-            >
-              {currentLang === 'zh' ? 'EN' : '中文'}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="sidebar-language-switch px-2 py-0.5 rounded border border-white/10 hover:bg-white/10"
+                onClick={handleFillExample}
+              >
+                {currentLang === 'zh' ? '使用示例' : 'Use Example'}
+              </button>
+              <button
+                type="button"
+                className={`sidebar-language-switch ${isDesktop ? 'window-no-drag' : ''}`}
+                onClick={onLanguageToggle}
+              >
+                {currentLang === 'zh' ? 'EN' : '中文'}
+              </button>
+            </div>
           </div>
           <div className="space-y-1">
             <h2 className="sidebar-title">{text.controlTitle}</h2>
@@ -342,7 +357,7 @@ export function SourceForm({
                 </label>
                 <textarea
                   id="hotwords"
-                  className={inputThemeClass}
+                  className="textarea-purple-white"
                   rows={3}
                   placeholder={text.hotwordsPlaceholder}
                   value={form.hotwords}
@@ -357,7 +372,7 @@ export function SourceForm({
                 </label>
                 <textarea
                   id="transcription-context"
-                  className={inputThemeClass}
+                  className="textarea-purple-white"
                   rows={3}
                   placeholder={text.transcriptionContextPlaceholder}
                   value={form.transcriptionContext}

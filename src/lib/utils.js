@@ -153,7 +153,7 @@ export function formatHistoryTimestamp(timestamp, locale = 'en-US') {
 }
 
 export function getPreferredTheme() {
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'studio-dark' : 'studio';
+  return 'studio';
 }
 
 export function normalizeErrorMessage(error, fallbackText) {
